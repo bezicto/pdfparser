@@ -9,41 +9,11 @@ jobs:
 
     strategy:
       matrix:
-        php: ['7.1', '7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5']
+        php: ['8.5']
 
     steps:
       - name: "Checkout"
-        uses: "actions/checkout@v3"
-
-      - name: "Install PHP"
-        uses: "shivammathur/setup-php@v2"
-        with:
-          php-version: "${{ matrix.php }}"
-          coverage: "none"
-          tools: composer:v2
-        env:
-          COMPOSER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: "Install dependencies with Composer"
-        uses: "ramsey/composer-install@v2"
-
-      - name: "Install dev tools"
-        run: "make install-dev-tools"
-
-      - name: "Run PHPUnit"
-        run: "make run-phpunit"
-
-  phpunit-lower-php:
-    name: "PHPUnit (PHP ${{ matrix.php }})"
-    runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        php: ['7.1']
-
-    steps:
-      - name: "Checkout"
-        uses: "actions/checkout@v3"
+        uses: "actions/checkout@v4"
 
       - name: "Install PHP"
         uses: "shivammathur/setup-php@v2"
@@ -69,13 +39,13 @@ jobs:
 
     strategy:
       matrix:
-        php: ['7.4']
+        php: ['8.5']
 
     steps:
       - name: "Checkout"
-        uses: "actions/checkout@v3"
+        uses: "actions/checkout@v4"
 
-      - name: "Install PHP with PCOV"
+      - name: "Install PHP with Xdebug"
         uses: "shivammathur/setup-php@v2"
         with:
           php-version: "${{ matrix.php }}"
@@ -93,47 +63,17 @@ jobs:
       - name: "Run PHPUnit"
         run: make run-phpunit ARGS="-v --coverage-clover coverage/clover.xml"
 
-  phpunit-composerv2:
-    name: "PHPUnit Composer v2 (PHP ${{ matrix.php }})"
-    runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        php: ['7.4']
-
-    steps:
-      - name: "Checkout"
-        uses: "actions/checkout@v3"
-
-      - name: "Install PHP"
-        uses: "shivammathur/setup-php@v2"
-        with:
-          php-version: "${{ matrix.php }}"
-          coverage: "none"
-          tools: composer:v2
-        env:
-          COMPOSER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: "Install dependencies with Composer"
-        uses: "ramsey/composer-install@v2"
-
-      - name: "Install dev tools"
-        run: "make install-dev-tools"
-
-      - name: "Run PHPUnit"
-        run: "make run-phpunit"
-
   alt-autoload:
     name: "Tests alternative autoloader (PHP ${{ matrix.php }})"
     runs-on: ubuntu-latest
 
     strategy:
       matrix:
-        php: ['7.1', '7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5']
+        php: ['8.5']
 
     steps:
       - name: "Checkout"
-        uses: "actions/checkout@v3"
+        uses: "actions/checkout@v4"
 
       - name: "Install PHP"
         uses: "shivammathur/setup-php@v2"
@@ -150,10 +90,11 @@ jobs:
 
     strategy:
       matrix:
-        php: ['7.3']
+        php: ['8.5']
+
     steps:
       - name: "Checkout"
-        uses: "actions/checkout@v3"
+        uses: "actions/checkout@v4"
 
       - name: "Install PHP"
         uses: "shivammathur/setup-php@v2"
@@ -182,11 +123,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php: ['7.1', '7.2', '7.3', '7.4', '8.0', '8.1', '8.2', '8.3', '8.4', '8.5']
+        php: ['8.5']
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install PHP
         uses: shivammathur/setup-php@v2
@@ -195,7 +136,7 @@ jobs:
           ini-values: memory_limit=1G
 
       - name: Install Composer dependencies (root)
-        run: composer update --no-progress --no-suggest --prefer-dist --optimize-autoloader
+        run: composer update --no-progress --prefer-dist --optimize-autoloader
 
       - name: Install Composer dependencies (dev-tools)
         run: composer update --working-dir=dev-tools

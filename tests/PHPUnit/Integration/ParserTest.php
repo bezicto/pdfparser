@@ -77,7 +77,7 @@ class ParserTest extends TestCase
                     } catch (\Exception $e) {
                         if (
                             'Secured pdf file are currently not supported.' !== $e->getMessage()
-                            && 0 != strpos($e->getMessage(), 'TCPDF_PARSER')
+                            && !str_starts_with($e->getMessage(), 'TCPDF_PARSER')
                         ) {
                             throw $e;
                         }
@@ -384,7 +384,7 @@ class ParserTest extends TestCase
 
         // PHPUnit reports warnings and notices, but the test passes nevertheless.
         // Turn them into exceptions to let the test fail.
-        set_error_handler(function (int $severity, string $message) {
+        set_error_handler(static function (int $severity, string $message): never {
             throw new \ErrorException($message, 0, $severity);
         });
 
@@ -421,7 +421,7 @@ class ParserTest extends TestCase
 
         // PHPUnit reports warnings and notices, but the test passes nevertheless.
         // Turn them into exceptions to let the test fail.
-        set_error_handler(function (int $severity, string $message) {
+        set_error_handler(static function (int $severity, string $message): never {
             throw new \ErrorException($message, 0, $severity);
         });
 
@@ -517,7 +517,9 @@ class ParserTest extends TestCase
 
         $document = $this->fixture->parseFile($filename);
 
-        $this->assertEquals(Image::class, \get_class($document->getObjectById('128_0')));
+        $object = $document->getObjectById('128_0');
+        $this->assertNotNull($object);
+        $this->assertEquals(Image::class, $object::class);
         $this->assertStringContainsString('4 von 4', $document->getText());
     }
 
@@ -691,10 +693,6 @@ class ParserTest extends TestCase
      */
     public function testRetainImageContentImpact(): void
     {
-        if (version_compare(\PHP_VERSION, '7.3.0', '<')) {
-            $this->markTestSkipped('Garbage collection doesn\'t work reliably enough for this test in PHP < 7.3');
-        }
-
         gc_collect_cycles();
         $baselineMemory = memory_get_usage(true);
 
@@ -715,11 +713,11 @@ class ParserTest extends TestCase
 
         $lazyMemory = memory_get_usage(true);
         $this->assertLessThan($baselineMemory + 50000000, $lazyMemory, 'Lazy parse should not eagerly expand 104 MB image');
-        $this->assertTrue(null != $document && '' !== $document->getText());
+        $this->assertTrue(null !== $document && '' !== $document->getText());
 
         // When image content IS explicitly requested, retainImageContent=true returns the full decoded image
         $images = $document->getObjectsByType('XObject', 'Image');
-        $image = reset($images);
+        $image = array_first($images);
         $this->assertInstanceOf(Image::class, $image);
         $this->assertGreaterThan(100000000, \strlen((string) $image->getContent()));
 
@@ -740,7 +738,7 @@ class ParserTest extends TestCase
         }
 
         $images = $document->getObjectsByType('XObject', 'Image');
-        $image = reset($images);
+        $image = array_first($images);
         $this->assertInstanceOf(Image::class, $image);
         $this->assertNull($image->getContent());
 
@@ -764,7 +762,7 @@ class ParserTest extends TestCase
         $threw = false;
         try {
             (new Parser([]))->parseFile($filename);
-        } catch (\Exception $e) {
+        } catch (\Exception) {
             // we expect an exception to be thrown if an encrypted PDF is encountered.
             $threw = true;
         }
@@ -927,8 +925,9 @@ class RawDataParserSpy extends RawDataParser
     /**
      * @var array<string>
      */
-    public $events = [];
+    public array $events = [];
 
+    #[\Override]
     protected function getIndirectObject(string $pdfData, array $xref, string $objRef, int $offset = 0, bool $decoding = true): array
     {
         $this->events[] = 'decode '.$objRef;
@@ -946,7 +945,8 @@ class ParserSub extends Parser
         return $this->rawDataParser;
     }
 
-    protected function parseObject(string $id, array $structure, ?Document $document)
+    #[\Override]
+    protected function parseObject(string $id, array $structure, ?Document $document): void
     {
         if ($this->rawDataParser instanceof RawDataParserSpy) {
             $this->rawDataParser->events[] = 'build '.$id;
@@ -955,9 +955,9 @@ class ParserSub extends Parser
         parent::parseObject($id, $structure, $document);
     }
 
-    public function exposedParseObject($id, $structure, $document)
+    public function exposedParseObject(string $id, array $structure, ?Document $document): void
     {
-        return $this->parseObject($id, $structure, $document);
+        $this->parseObject($id, $structure, $document);
     }
 
     public function getObjects(): array

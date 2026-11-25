@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file This file is part of the PdfParser library.
  *
@@ -34,16 +36,11 @@ use Smalot\PdfParser\XObject\Form;
  */
 final class KernedTjArrayFormatContentTest extends AbstractPerformanceTest
 {
-    /**
-     * @var positive-int
-     */
-    private const OPERANDS = 60000;
+    private const int OPERANDS = 60000;
 
-    /**
-     * @var string
-     */
-    protected $content;
+    protected string $content;
 
+    #[\Override]
     public function init(): void
     {
         // Create a string which represents a PDF that emits text
@@ -56,6 +53,7 @@ final class KernedTjArrayFormatContentTest extends AbstractPerformanceTest
         $this->content = 'BT /F1 12 Tf 10 10 Td ['.$operands.']TJ ET';
     }
 
+    #[\Override]
     public function run(): void
     {
         $document = new Document();
@@ -79,6 +77,7 @@ final class KernedTjArrayFormatContentTest extends AbstractPerformanceTest
         }
     }
 
+    #[\Override]
     public function getMaxEstimatedTime(): int
     {
         return 5;

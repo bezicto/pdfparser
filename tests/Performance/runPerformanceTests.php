@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 require __DIR__.'/../../vendor/autoload.php';
 
 use PerformanceTests\Exception\PerformanceFailException;
@@ -25,7 +27,7 @@ foreach ($tests as $test) {
     if ($test->getMaxEstimatedTime() <= $time) {
         $msg = sprintf(
             'Performance failed on test "%s". Time taken was %.2f seconds, expected less than %d seconds.',
-            get_class($test),
+            $test::class,
             $time,
             $test->getMaxEstimatedTime()
         );

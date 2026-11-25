@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -39,6 +41,7 @@ namespace Smalot\PdfParser\Encoding;
  */
 class ISOLatin1Encoding extends AbstractEncoding
 {
+    #[\Override]
     public function getTranslations(): array
     {
         $encoding =

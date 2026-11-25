@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -39,19 +41,17 @@ use Smalot\PdfParser\Document;
  */
 class ElementHexa extends ElementString
 {
-    /**
-     * @return bool|ElementHexa|ElementDate
-     */
-    public static function parse(string $content, ?Document $document = null, int &$offset = 0)
+    #[\Override]
+    public static function parse(string $content, ?Document $document = null, int &$offset = 0, bool $only_values = false): ElementString|false
     {
-        if (preg_match('/^\s*\<(?P<name>[A-F0-9]+)\>/is', $content, $match)) {
+        if (1 === preg_match('/^\s*\<(?P<name>[A-F0-9]+)\>/is', $content, $match)) {
             $name = $match['name'];
-            $offset += strpos($content, '<'.$name) + \strlen($name) + 2; // 1 for '>'
+            $offset += (int) strpos($content, '<'.$name) + \strlen($name) + 2; // 1 for '>'
             // repackage string as standard
             $name = '('.self::decode($name).')';
             $element = ElementDate::parse($name, $document);
 
-            if (!$element) {
+            if (false === $element) {
                 $element = ElementString::parse($name, $document);
             }
 
@@ -70,22 +70,20 @@ class ElementHexa extends ElementString
 
         // Check for leading zeros (4-byte hexadecimal indicator), or
         // the BE BOM
-        if ('00' === substr($value, 0, 2) || 'feff' === strtolower(substr($value, 0, 4))) {
+        if (str_starts_with($value, '00') || str_starts_with(strtolower($value), 'feff')) {
             $value = (string) preg_replace('/^feff/i', '', $value);
             for ($i = 0, $length = \strlen($value); $i < $length; $i += 4) {
                 $hex = substr($value, $i, 4);
-                $text .= '&#'.str_pad(hexdec($hex), 4, '0', \STR_PAD_LEFT).';';
+                $text .= '&#'.str_pad((string) hexdec($hex), 4, '0', \STR_PAD_LEFT).';';
             }
         } else {
             // Otherwise decode this as 2-byte hexadecimal
             for ($i = 0, $length = \strlen($value); $i < $length; $i += 2) {
                 $hex = substr($value, $i, 2);
-                $text .= \chr(hexdec($hex));
+                $text .= \chr((int) hexdec($hex));
             }
         }
 
-        $text = html_entity_decode($text, \ENT_NOQUOTES, 'UTF-8');
-
-        return $text;
+        return html_entity_decode($text, \ENT_NOQUOTES, 'UTF-8');
     }
 }

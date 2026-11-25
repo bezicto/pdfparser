@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -44,10 +46,11 @@ class Form extends Page
     /**
      * Memoized extracted text keyed by resource context.
      *
-     * @var array<string, string>
+     * @var array<int|string, string>
      */
-    private $textCache = [];
+    private array $textCache = [];
 
+    #[\Override]
     public function getText(?Page $page = null): string
     {
         $content = $this->getContent();
@@ -62,7 +65,7 @@ class Form extends Page
 
         $hasOwnResources = $this->has('Resources');
         $resourceOwner = ($hasOwnResources || null === $page) ? $this : $page;
-        $cacheKey = $hasOwnResources ? 'self' : (null !== $page ? spl_object_hash($page) : 'null');
+        $cacheKey = $hasOwnResources ? 'self' : (null !== $page ? spl_object_id($page) : 'null');
 
         if (isset($this->textCache[$cacheKey])) {
             return $this->textCache[$cacheKey];

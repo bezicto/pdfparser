@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -12,7 +14,7 @@
  *
  * @url     <https://github.com/smalot/pdfparser>
  *
- *  PdfParser is a pdf library written in PHPi, extraction oriented.
+ *  PdfParser is a pdf library written in PHP, extraction oriented.
  *  Copyright (C) 2017 - Sébastien MALOT <sebastien@malot.fr>
  *
  *  This program is free software: you can redistribute it and/or modify
@@ -40,9 +42,9 @@ use Smalot\PdfParser\Document;
 class ElementDate extends ElementString
 {
     /**
-     * @var array<int,string>
+     * @var array<int, string>
      */
-    protected static $formats = [
+    protected static array $formats = [
         4 => 'Y',
         6 => 'Ym',
         8 => 'Ymd',
@@ -55,62 +57,53 @@ class ElementDate extends ElementString
         19 => 'YmdHisO',
     ];
 
-    /**
-     * @var string
-     */
-    protected $format = 'c';
+    protected string $format = 'c';
 
-    /**
-     * @var \DateTime
-     */
-    protected $value;
-
-    public function __construct($value)
+    public function __construct(mixed $value)
     {
         if (!($value instanceof \DateTime)) {
-            throw new \Exception('DateTime required.'); // FIXME: Sometimes strings are passed to this function
+            throw new \Exception('DateTime required.');
         }
 
         parent::__construct($value);
     }
 
-    public function setFormat(string $format)
+    public function setFormat(string $format): void
     {
         $this->format = $format;
     }
 
-    public function equals($value): bool
+    #[\Override]
+    public function equals(mixed $value): bool
     {
-        if ($value instanceof \DateTime) {
-            $timestamp = $value->getTimeStamp();
+        if ($value instanceof \DateTimeInterface) {
+            $timestamp = $value->getTimestamp();
         } else {
-            $timestamp = strtotime($value);
+            $timestamp = strtotime((string) $value);
         }
 
-        return $timestamp == $this->value->getTimeStamp();
+        return false !== $timestamp && $timestamp === $this->value->getTimestamp();
     }
 
+    #[\Override]
     public function __toString(): string
     {
-        return (string) $this->value->format($this->format);
+        return $this->value->format($this->format);
     }
 
-    /**
-     * @return bool|ElementDate
-     */
-    public static function parse(string $content, ?Document $document = null, int &$offset = 0)
+    #[\Override]
+    public static function parse(string $content, ?Document $document = null, int &$offset = 0, bool $only_values = false): self|false
     {
-        if (preg_match('/^\s*\(D\:(?P<name>.*?)\)/s', $content, $match)) {
-            $name = $match['name'];
-            $name = str_replace("'", '', $name);
+        if (1 === preg_match('/^\s*\(D\:(?P<name>.*?)\)/s', $content, $match)) {
+            $name = str_replace("'", '', $match['name']);
             $date = false;
 
             // Smallest format : Y
             // Full format     : YmdHisP
-            if (preg_match('/^\d{4}(\d{2}(\d{2}(\d{2}(\d{2}(\d{2}(Z(\d{2,4})?|[\+-]?\d{2}(\d{2})?)?)?)?)?)?)?$/', $name)) {
-                if ($pos = strpos($name, 'Z')) {
+            if (1 === preg_match('/^\d{4}(\d{2}(\d{2}(\d{2}(\d{2}(\d{2}(Z(\d{2,4})?|[\+-]?\d{2}(\d{2})?)?)?)?)?)?)?$/', $name)) {
+                if (false !== ($pos = strpos($name, 'Z'))) {
                     $name = substr($name, 0, $pos + 1);
-                } elseif (18 == \strlen($name) && preg_match('/[^\+-]0000$/', $name)) {
+                } elseif (18 === \strlen($name) && 1 === preg_match('/[^\+-]0000$/', $name)) {
                     $name = substr($name, 0, -4).'+0000';
                 }
 
@@ -120,20 +113,17 @@ class ElementDate extends ElementString
                 }
                 $format = self::$formats[$nameLen];
                 $date = \DateTime::createFromFormat($format, $name, new \DateTimeZone('UTC'));
-            } else {
+            } elseif (1 === preg_match('/^\d{1,2}-\d{1,2}-\d{4},?\s+\d{2}:\d{2}:\d{2}[\+-]\d{4}$/', $name)) {
                 // special cases
-                if (preg_match('/^\d{1,2}-\d{1,2}-\d{4},?\s+\d{2}:\d{2}:\d{2}[\+-]\d{4}$/', $name)) {
-                    $name = str_replace(',', '', $name);
-                    $format = 'n-j-Y H:i:sO';
-                    $date = \DateTime::createFromFormat($format, $name, new \DateTimeZone('UTC'));
-                }
+                $name = str_replace(',', '', $name);
+                $date = \DateTime::createFromFormat('n-j-Y H:i:sO', $name, new \DateTimeZone('UTC'));
             }
 
-            if (!$date) {
+            if (false === $date) {
                 return false;
             }
 
-            $offset += strpos($content, '(D:') + \strlen($match['name']) + 4; // 1 for '(D:' and ')'
+            $offset += (int) strpos($content, '(D:') + \strlen($match['name']) + 4; // 1 for '(D:' and ')'
 
             return new self($date);
         }

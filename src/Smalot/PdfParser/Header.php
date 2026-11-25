@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -43,26 +45,15 @@ use Smalot\PdfParser\Element\ElementXRef;
 class Header
 {
     /**
-     * @var Document|null
-     */
-    protected $document;
-
-    /**
-     * @var Element[]
-     */
-    protected $elements;
-
-    /**
      * @param Element[] $elements list of elements
-     * @param Document  $document document
      */
-    public function __construct(array $elements = [], ?Document $document = null)
-    {
-        $this->elements = $elements;
-        $this->document = $document;
+    public function __construct(
+        protected array $elements = [],
+        protected ?Document $document = null,
+    ) {
     }
 
-    public function init()
+    public function init(): void
     {
         foreach ($this->elements as $element) {
             if ($element instanceof Element) {
@@ -74,7 +65,7 @@ class Header
     /**
      * Returns all elements.
      */
-    public function getElements()
+    public function getElements(): array
     {
         foreach ($this->elements as $name => $element) {
             $this->resolveXRef($name);
@@ -85,13 +76,15 @@ class Header
 
     /**
      * Used only for debug.
+     *
+     * @return array<int|string, class-string>
      */
     public function getElementTypes(): array
     {
         $types = [];
 
         foreach ($this->elements as $key => $element) {
-            $types[$key] = \get_class($element);
+            $types[$key] = $element::class;
         }
 
         return $types;
@@ -129,10 +122,7 @@ class Header
         return \array_key_exists($name, $this->elements);
     }
 
-    /**
-     * @return Element|PDFObject
-     */
-    public function get(string $name)
+    public function get(string $name): Element|PDFObject|self
     {
         if (\array_key_exists($name, $this->elements) && $element = $this->resolveXRef($name)) {
             return $element;
@@ -144,14 +134,11 @@ class Header
     /**
      * Resolve XRef to object.
      *
-     * @return Element|PDFObject
-     *
      * @throws \Exception
      */
-    protected function resolveXRef(string $name)
+    protected function resolveXRef(int|string $name): mixed
     {
         if (($obj = $this->elements[$name]) instanceof ElementXRef && null !== $this->document) {
-            /** @var ElementXRef $obj */
             $object = $this->document->getObjectById($obj->getId());
 
             if (null === $object) {
@@ -172,8 +159,7 @@ class Header
      */
     public static function parse(string $content, Document $document, int &$position = 0): self
     {
-        /* @var Header $header */
-        if ('<<' == substr(trim($content), 0, 2)) {
+        if (str_starts_with(trim($content), '<<')) {
             $header = ElementStruct::parse($content, $document, $position);
         } else {
             $elements = ElementArray::parse($content, $document, $position);

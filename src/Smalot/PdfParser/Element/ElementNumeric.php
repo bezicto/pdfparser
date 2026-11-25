@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -40,19 +42,17 @@ use Smalot\PdfParser\Element;
  */
 class ElementNumeric extends Element
 {
-    public function __construct(string $value)
+    public function __construct(string|int|float $value)
     {
         parent::__construct((float) $value, null);
     }
 
-    /**
-     * @return bool|ElementNumeric
-     */
-    public static function parse(string $content, ?Document $document = null, int &$offset = 0)
+    #[\Override]
+    public static function parse(string $content, ?Document $document = null, int &$offset = 0, bool $only_values = false): self|false
     {
-        if (preg_match('/^\s*(?P<value>\-?[0-9\.]+)/s', $content, $match)) {
+        if (1 === preg_match('/^\s*(?P<value>\-?[0-9\.]+)/s', $content, $match)) {
             $value = $match['value'];
-            $offset += strpos($content, $value) + \strlen($value);
+            $offset += (int) strpos($content, $value) + \strlen($value);
 
             return new self($value);
         }

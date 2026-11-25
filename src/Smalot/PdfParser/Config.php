@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -40,33 +42,24 @@ namespace Smalot\PdfParser;
  */
 class Config
 {
-    private $fontSpaceLimit = -50;
+    private int $fontSpaceLimit = -50;
 
-    /**
-     * @var string
-     */
-    private $horizontalOffset = ' ';
+    private string $horizontalOffset = ' ';
 
     /**
      * Represents: (NUL, HT, LF, FF, CR, SP)
-     *
-     * @var string
      */
-    private $pdfWhitespaces = "\0\t\n\f\r ";
+    private string $pdfWhitespaces = "\0\t\n\f\r ";
 
     /**
      * Represents: (NUL, HT, LF, FF, CR, SP)
-     *
-     * @var string
      */
-    private $pdfWhitespacesRegex = '[\0\t\n\f\r ]';
+    private string $pdfWhitespacesRegex = '[\0\t\n\f\r ]';
 
     /**
      * Whether to retain raw image data as content or discard it to save memory
-     *
-     * @var bool
      */
-    private $retainImageContent = true;
+    private bool $retainImageContent = true;
 
     /**
      * Maximum output size, in bytes, a single stream may be decompressed to. It is
@@ -75,42 +68,34 @@ class Config
      * may contain highly compressible streams (e.g. images) that decode far larger
      * than the file, which cannot be told apart from a decompression bomb by size.
      *
-     * @var int
-     *
      * @see https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/PDF32000_2008.pdf#page=657 ISO 32000-1:2008, Annex C (implementation limits)
      */
-    private $decodeMemoryLimit = 0;
+    private int $decodeMemoryLimit = 0;
 
     /**
      * Maximum nesting depth of arrays and dictionaries a single object may have.
      * Bounds the recursion of the raw object parser. 0 means unlimited.
      *
-     * @var int
-     *
      * @see https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/PDF32000_2008.pdf#page=657 ISO 32000-1:2008, Annex C (implementation limits)
      */
-    private $maxNestingDepth = 5000;
+    private int $maxNestingDepth = 5000;
 
     /**
      * Whether to include font id and size in dataTm array
-     *
-     * @var bool
      */
-    private $dataTmFontInfoHasToBeIncluded = false;
+    private bool $dataTmFontInfoHasToBeIncluded = false;
 
     /**
      * Whether to attempt to read PDFs even if they are marked as encrypted.
-     *
-     * @var bool
      */
-    private $ignoreEncryption = false;
+    private bool $ignoreEncryption = false;
 
-    public function getFontSpaceLimit()
+    public function getFontSpaceLimit(): int
     {
         return $this->fontSpaceLimit;
     }
 
-    public function setFontSpaceLimit($value)
+    public function setFontSpaceLimit(int $value): void
     {
         $this->fontSpaceLimit = $value;
     }
@@ -120,7 +105,7 @@ class Config
         return $this->horizontalOffset;
     }
 
-    public function setHorizontalOffset($value): void
+    public function setHorizontalOffset(string $value): void
     {
         $this->horizontalOffset = $value;
     }

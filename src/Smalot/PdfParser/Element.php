@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -48,29 +50,22 @@ use Smalot\PdfParser\Element\ElementXRef;
  */
 class Element
 {
-    /**
-     * @var Document|null
-     */
-    protected $document;
-
-    protected $value;
-
-    public function __construct($value, ?Document $document = null)
-    {
-        $this->value = $value;
-        $this->document = $document;
+    public function __construct(
+        protected mixed $value,
+        protected ?Document $document = null,
+    ) {
     }
 
-    public function init()
+    public function init(): void
     {
     }
 
-    public function equals($value): bool
+    public function equals(mixed $value): bool
     {
         return $value == $this->value;
     }
 
-    public function contains($value): bool
+    public function contains(mixed $value): bool
     {
         if (\is_array($this->value)) {
             /** @var Element $val */
@@ -86,7 +81,7 @@ class Element
         return $this->equals($value);
     }
 
-    public function getContent()
+    public function getContent(): mixed
     {
         return $this->value;
     }
@@ -96,10 +91,11 @@ class Element
         return (string) $this->value;
     }
 
-    public static function parse(string $content, ?Document $document = null, int &$position = 0)
+    /**
+     * @return array<int|string, self|Header>|self|Header|false
+     */
+    public static function parse(string $content, ?Document $document = null, int &$position = 0, bool $only_values = false): array|self|Header|false
     {
-        $args = \func_get_args();
-        $only_values = isset($args[3]) ? $args[3] : false;
         $content = trim($content);
         $values = [];
 
@@ -109,17 +105,16 @@ class Element
             if (!$only_values) {
                 if (!preg_match('/\G\s*(?P<name>\/[A-Z#0-9\._]+)(?P<value>.*)/si', $content, $match, 0, $position)) {
                     break;
-                } else {
-                    $name = preg_replace_callback(
-                        '/#([0-9a-f]{2})/i',
-                        function ($m) {
-                            return \chr(base_convert($m[1], 16, 10));
-                        },
-                        ltrim($match['name'], '/')
-                    );
-                    $value = $match['value'];
-                    $position = strpos($content, $value, $position + \strlen($match['name']));
                 }
+
+                $name = (string) preg_replace_callback(
+                    '/#([0-9a-f]{2})/i',
+                    static fn (array $m): string => \chr((int) hexdec($m[1])),
+                    ltrim($match['name'], '/')
+                );
+                $value = $match['value'];
+                $nextPos = strpos($content, $value, $position + \strlen($match['name']));
+                $position = false !== $nextPos ? $nextPos : \strlen($content);
             } else {
                 $name = \count($values);
                 $value = substr($content, $position);

@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file This file is part of the PdfParser library.
  *
@@ -36,7 +38,7 @@ $filename = __DIR__.'/../../samples/InternationalChars.pdf';
 $document = $parser->parseFile($filename);
 
 $needle = 'Лорем ипсум долор сит амет, еу сед либрис долорем инцоррупте.';
-if (0 !== strpos($document->getText(), $needle)) {
+if (str_contains($document->getText(), $needle)) {
     return 0;
 }
 

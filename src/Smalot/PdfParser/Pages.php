@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -33,6 +35,7 @@
 namespace Smalot\PdfParser;
 
 use Smalot\PdfParser\Element\ElementArray;
+use Smalot\PdfParser\Element\ElementMissing;
 
 /**
  * Class Pages
@@ -40,14 +43,14 @@ use Smalot\PdfParser\Element\ElementArray;
 class Pages extends PDFObject
 {
     /**
-     * @var array<\Smalot\PdfParser\Font>|null
+     * @var array<Font>|null
      */
-    protected $fonts;
+    protected ?array $fonts = null;
 
     /**
-     * @var array<\Smalot\PdfParser\PDFObject>|null
+     * @var array<PDFObject>|null
      */
-    protected $xobjects;
+    protected ?array $xobjects = null;
 
     /**
      * @todo Objects other than Pages or Page might need to be treated specifically
@@ -56,8 +59,8 @@ class Pages extends PDFObject
      * @param \SplObjectStorage<self, null>|null $ancestorRefs      Pages nodes on the path from the root to this
      *                                                              node; used by the recursion to detect cycles.
      *                                                              Leave it null when calling from the outside.
-     * @param array<\Smalot\PdfParser\Font>      $inheritedFonts    Fonts inherited from ancestor /Pages nodes
-     * @param array<\Smalot\PdfParser\PDFObject> $inheritedXObjects XObjects inherited from ancestor /Pages nodes
+     * @param array<Font>                        $inheritedFonts    Fonts inherited from ancestor /Pages nodes
+     * @param array<PDFObject>                   $inheritedXObjects XObjects inherited from ancestor /Pages nodes
      *
      * @see https://github.com/smalot/pdfparser/issues/331
      * @see https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/PDF32000_2008.pdf#page=83 ISO 32000-1:2008, 7.7.3 (page tree)
@@ -66,7 +69,7 @@ class Pages extends PDFObject
         bool $deep = false,
         ?\SplObjectStorage $ancestorRefs = null,
         array $inheritedFonts = [],
-        array $inheritedXObjects = []
+        array $inheritedXObjects = [],
     ): array {
         if (!$this->has('Kids')) {
             return [];
@@ -85,7 +88,7 @@ class Pages extends PDFObject
         // set shared by all recursion levels (added on entry, removed on exit), so
         // its size stays linear in the depth. A node already on the path is not
         // descended into again, so the pages collected so far are returned.
-        $ancestorRefs = $ancestorRefs ?? new \SplObjectStorage();
+        $ancestorRefs ??= new \SplObjectStorage();
         if ($ancestorRefs->offsetExists($this)) {
             return [];
         }
@@ -93,10 +96,10 @@ class Pages extends PDFObject
 
         try {
             // Prepare inheritable Resources (Fonts & XObjects) for descendant Pages and Page leaves
-            if (false === \is_array($this->fonts)) {
+            if (null === $this->fonts) {
                 $this->setupFonts();
             }
-            if (false === \is_array($this->xobjects)) {
+            if (null === $this->xobjects) {
                 $this->setupXObjects();
             }
 
@@ -139,7 +142,7 @@ class Pages extends PDFObject
 
         if (method_exists($resources, 'has') && $resources->has('XObject')) {
             $xobjRes = $resources->get('XObject');
-            if ($xobjRes instanceof Element\ElementMissing) {
+            if ($xobjRes instanceof ElementMissing) {
                 $this->xobjects = [];
 
                 return;
@@ -154,8 +157,8 @@ class Pages extends PDFObject
             $table = [];
             foreach ($xobjects as $id => $xobject) {
                 $table[$id] = $xobject;
-                $cleanId = preg_replace('/[^0-9\.\-_]/', '', $id);
-                if ('' != $cleanId && !isset($table[$cleanId])) {
+                $cleanId = preg_replace('/[^0-9\.\-_]/', '', (string) $id);
+                if ('' !== $cleanId && null !== $cleanId && !isset($table[$cleanId])) {
                     $table[$cleanId] = $xobject;
                 }
             }
@@ -169,24 +172,25 @@ class Pages extends PDFObject
     /**
      * Gathers information about fonts and collects them in a list.
      *
-     * @return void
-     *
      * @internal
      */
-    protected function setupFonts()
+    protected function setupFonts(): void
     {
         $resources = $this->get('Resources');
 
         if (method_exists($resources, 'has') && $resources->has('Font')) {
+            $fontRes = $resources->get('Font');
             // no fonts available, therefore stop here
-            if ($resources->get('Font') instanceof Element\ElementMissing) {
+            if ($fontRes instanceof ElementMissing) {
+                $this->fonts = [];
+
                 return;
             }
 
-            if ($resources->get('Font') instanceof Header) {
-                $fonts = $resources->get('Font')->getElements();
+            if ($fontRes instanceof Header) {
+                $fonts = $fontRes->getElements();
             } else {
-                $fonts = $resources->get('Font')->getHeader()->getElements();
+                $fonts = $fontRes->getHeader()->getElements();
             }
 
             $table = [];
@@ -196,8 +200,8 @@ class Pages extends PDFObject
                     $table[$id] = $font;
 
                     // Store fallback cleaned id value (only numeric) without overwriting exact keys
-                    $cleanId = preg_replace('/[^0-9\.\-_]/', '', $id);
-                    if ('' != $cleanId && !isset($table[$cleanId])) {
+                    $cleanId = preg_replace('/[^0-9\.\-_]/', '', (string) $id);
+                    if ('' !== $cleanId && null !== $cleanId && !isset($table[$cleanId])) {
                         $table[$cleanId] = $font;
                     }
                 }

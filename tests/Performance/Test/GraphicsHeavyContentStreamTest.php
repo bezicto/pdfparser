@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file This file is part of the PdfParser library.
  *
@@ -20,26 +22,26 @@ use Smalot\PdfParser\Parser;
  */
 final class GraphicsHeavyContentStreamTest extends AbstractPerformanceTest
 {
-    /**
-     * @var string
-     */
-    private $file;
+    private string $file;
 
+    #[\Override]
     public function init(): void
     {
         $this->file = __DIR__.'/../../../samples/bugs/Issue356.pdf';
     }
 
+    #[\Override]
     public function run(): void
     {
         $document = (new Parser())->parseFile($this->file);
         $text = $document->getText();
 
-        if (false === strpos($text, 'Ημερήσια έκθεση επιδημιολογικής')) {
+        if (!str_contains($text, 'Ημερήσια έκθεση επιδημιολογικής')) {
             throw new \RuntimeException('Expected text not extracted from Issue356.pdf.');
         }
     }
 
+    #[\Override]
     public function getMaxEstimatedTime(): int
     {
         return 2;

@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -52,41 +54,30 @@ class Document
     /**
      * @var PDFObject[]
      */
-    protected $objects = [];
+    protected array $objects = [];
 
-    /**
-     * @var array
-     */
-    protected $dictionary = [];
+    protected array $dictionary = [];
 
-    /**
-     * @var Header
-     */
-    protected $trailer;
+    protected Header $trailer;
 
     /**
      * @var array<mixed>
      */
-    protected $metadata = [];
+    protected array $metadata = [];
 
-    /**
-     * @var array|null
-     */
-    protected $details;
+    protected ?array $details = null;
 
     /**
      * Whether document-level XMP metadata objects have already been scanned into $this->metadata.
-     *
-     * @var bool
      */
-    private $xmpLoaded = false;
+    private bool $xmpLoaded = false;
 
     public function __construct()
     {
         $this->trailer = new Header([], $this);
     }
 
-    public function init()
+    public function init(): void
     {
         $this->details = null;
         $this->xmpLoaded = false;
@@ -103,7 +94,7 @@ class Document
     /**
      * Build dictionary based on type header field.
      */
-    protected function buildDictionary()
+    protected function buildDictionary(): void
     {
         // Build dictionary.
         $this->dictionary = [];
@@ -112,7 +103,7 @@ class Document
             // Cache objects by type and subtype
             $type = $object->getHeader()->get('Type')->getContent();
 
-            if (null != $type) {
+            if ((\is_string($type) || \is_int($type)) && '' !== $type) {
                 if (!isset($this->dictionary[$type])) {
                     $this->dictionary[$type] = [
                         'all' => [],
@@ -123,7 +114,7 @@ class Document
                 $this->dictionary[$type]['all'][$id] = $object;
 
                 $subtype = $object->getHeader()->get('Subtype')->getContent();
-                if (null != $subtype) {
+                if ((\is_string($subtype) || \is_int($subtype)) && '' !== $subtype) {
                     if (!isset($this->dictionary[$type]['subtype'][$subtype])) {
                         $this->dictionary[$type]['subtype'][$subtype] = [];
                     }
@@ -136,7 +127,7 @@ class Document
     /**
      * Build details array.
      */
-    protected function buildDetails()
+    protected function buildDetails(): void
     {
         // Build details array.
         $details = [];
@@ -147,7 +138,7 @@ class Document
             $info = $this->trailer->get('Info');
             // This could be an ElementMissing object, so we need to check for
             // the getHeader method first.
-            if (null !== $info && method_exists($info, 'getHeader')) {
+            if (method_exists($info, 'getHeader')) {
                 $details = $info->getHeader()->getDetails();
             }
         }
@@ -156,7 +147,7 @@ class Document
         try {
             $pages = $this->getPages();
             $details['Pages'] = \count($pages);
-        } catch (\Exception $e) {
+        } catch (\Exception) {
             $details['Pages'] = 0;
         }
 
@@ -173,19 +164,27 @@ class Document
 
                     // Remove backslash plus bytes written into high part of
                     // multibyte unicode character
-                    $value = preg_replace_callback("/\x5c\x5c\xe0([\xb4-\xb8])(.)/", function (array $match): string {
-                        $diff = (\ord($match[1]) - 182) * 64;
+                    $value = (string) preg_replace_callback(
+                        "/\x5c\x5c\xe0([\xb4-\xb8])(.)/",
+                        static function (array $match): string {
+                            $diff = (\ord($match[1]) - 182) * 64;
 
-                        return PDFDocEncoding::convertPDFDoc2UTF8(\chr((\ord($match[2]) + $diff) & 0xFF));
-                    }, $value);
+                            return PDFDocEncoding::convertPDFDoc2UTF8(\chr((\ord($match[2]) + $diff) & 0xFF));
+                        },
+                        $value
+                    );
 
                     // Remove bytes written into low part of multibyte unicode
                     // character
-                    $value = preg_replace_callback("/(.)\x9c\xe0([\xb3-\xb7])/", function (array $match): string {
-                        $diff = \ord($match[2]) - 181;
+                    $value = (string) preg_replace_callback(
+                        "/(.)\x9c\xe0([\xb3-\xb7])/",
+                        static function (array $match): string {
+                            $diff = \ord($match[2]) - 181;
 
-                        return \chr((\ord($match[1]) + $diff) & 0xFF);
-                    }, $value);
+                            return \chr((\ord($match[1]) + $diff) & 0xFF);
+                        },
+                        $value
+                    );
 
                     // Remove this byte string that Adobe occasionally adds
                     // between two single byte characters in a unicode string
@@ -208,8 +207,7 @@ class Document
             $catalogXmpFound = false;
 
             if ($this->hasObjectsByType('Catalog')) {
-                $catalogs = $this->getObjectsByType('Catalog');
-                $catalog = reset($catalogs);
+                $catalog = array_first($this->getObjectsByType('Catalog'));
                 if ($catalog instanceof PDFObject && $catalog->has('Metadata')) {
                     $metaObj = $catalog->get('Metadata');
                     if ($metaObj instanceof PDFObject) {
@@ -245,7 +243,7 @@ class Document
     public function extractXMPMetadata(string $content): void
     {
         $xml = xml_parser_create();
-        xml_parser_set_option($xml, \XML_OPTION_SKIP_WHITE, 1);
+        xml_parser_set_option($xml, \XML_OPTION_SKIP_WHITE, true);
 
         if (1 === xml_parse_into_struct($xml, $content, $values, $index)) {
             /*
@@ -266,16 +264,16 @@ class Document
                 $val['tag'] = strtolower($val['tag']);
 
                 // Ignore structural x: and rdf: XML elements
-                if (0 === strpos($val['tag'], 'x:')) {
+                if (str_starts_with($val['tag'], 'x:')) {
                     continue;
-                } elseif (0 === strpos($val['tag'], 'rdf:') && 'rdf:li' != $val['tag']) {
+                } elseif (str_starts_with($val['tag'], 'rdf:') && 'rdf:li' !== $val['tag']) {
                     continue;
                 }
 
                 switch ($val['type']) {
                     case 'open':
                         // Create an array of list items
-                        if ('rdf:li' == $val['tag']) {
+                        if ('rdf:li' === $val['tag']) {
                             $metadata[] = [];
 
                             // Move up one level in the stack
@@ -294,7 +292,7 @@ class Document
                     case 'complete':
                         if (isset($val['value'])) {
                             // Assign a value to this list item
-                            if ('rdf:li' == $val['tag']) {
+                            if ('rdf:li' === $val['tag']) {
                                 $metadata[] = $val['value'];
 
                                 // Else assign a value to this property
@@ -311,9 +309,9 @@ class Document
                             // where the element is of type string, use
                             // the value of the first list item as the
                             // value for this property
-                            if (1 == \count($metadata) && isset($metadata[0]) && \is_string($metadata[0])) {
+                            if (1 === \count($metadata) && isset($metadata[0]) && \is_string($metadata[0])) {
                                 $metadata = $metadata[0];
-                            } elseif (0 == \count($metadata)) {
+                            } elseif ([] === $metadata) {
                                 // if the value is an empty array, set
                                 // the value of this property to the empty
                                 // string
@@ -332,7 +330,7 @@ class Document
             }
 
             // Only use this metadata if it's referring to a PDF
-            if (!isset($metadata['dc:format']) || 'application/pdf' == $metadata['dc:format']) {
+            if (!isset($metadata['dc:format']) || 'application/pdf' === $metadata['dc:format']) {
                 // According to the XMP specifications: 'Conflict resolution
                 // for separate packets that describe the same resource is
                 // beyond the scope of this document.' - Section 6.1
@@ -344,16 +342,6 @@ class Document
                 $this->details = null;
             }
         }
-
-        // TODO: remove this if-clause and its content when dropping PHP 7 support
-        if (version_compare(PHP_VERSION, '8.0.0', '<')) {
-            // ref: https://www.php.net/manual/en/function.xml-parser-free.php
-            xml_parser_free($xml);
-
-            // to avoid memory leaks; documentation said:
-            // > it was necessary to also explicitly unset the reference to parser to avoid memory leaks
-            unset($xml);
-        }
     }
 
     public function getDictionary(): array
@@ -364,9 +352,9 @@ class Document
     /**
      * @param PDFObject[] $objects
      */
-    public function setObjects($objects = [])
+    public function setObjects(array $objects = []): void
     {
-        $this->objects = (array) $objects;
+        $this->objects = $objects;
 
         $this->init();
     }
@@ -374,26 +362,19 @@ class Document
     /**
      * @return PDFObject[]
      */
-    public function getObjects()
+    public function getObjects(): array
     {
         return $this->objects;
     }
 
-    /**
-     * @return PDFObject|Font|Page|Element|null
-     */
-    public function getObjectById(string $id)
+    public function getObjectById(string $id): PDFObject|Element|null
     {
-        if (isset($this->objects[$id])) {
-            return $this->objects[$id];
-        }
-
-        return null;
+        return $this->objects[$id] ?? null;
     }
 
     public function hasObjectsByType(string $type, ?string $subtype = null): bool
     {
-        return 0 < \count($this->getObjectsByType($type, $subtype));
+        return [] !== $this->getObjectsByType($type, $subtype);
     }
 
     public function getObjectsByType(string $type, ?string $subtype = null): array
@@ -402,12 +383,8 @@ class Document
             return [];
         }
 
-        if (null != $subtype) {
-            if (!isset($this->dictionary[$type]['subtype'][$subtype])) {
-                return [];
-            }
-
-            return $this->dictionary[$type]['subtype'][$subtype];
+        if (null !== $subtype && '' !== $subtype) {
+            return $this->dictionary[$type]['subtype'][$subtype] ?? [];
         }
 
         return $this->dictionary[$type]['all'];
@@ -416,19 +393,14 @@ class Document
     /**
      * @return Font[]
      */
-    public function getFonts()
+    public function getFonts(): array
     {
         return $this->getObjectsByType('Font');
     }
 
     public function getFirstFont(): ?Font
     {
-        $fonts = $this->getFonts();
-        if ([] === $fonts) {
-            return null;
-        }
-
-        return reset($fonts);
+        return array_first($this->getFonts());
     }
 
     /**
@@ -436,12 +408,11 @@ class Document
      *
      * @throws MissingCatalogException
      */
-    public function getPages()
+    public function getPages(): array
     {
         if ($this->hasObjectsByType('Catalog')) {
             // Search for catalog to list pages.
-            $catalogues = $this->getObjectsByType('Catalog');
-            $catalogue = reset($catalogues);
+            $catalogue = array_first($this->getObjectsByType('Catalog'));
 
             /** @var Pages $object */
             $object = $catalogue->get('Pages');
@@ -478,12 +449,12 @@ class Document
         $texts = [];
         $pages = $this->getPages();
 
-        // Only use the first X number of pages if $pageLimit is set and numeric.
-        if (\is_int($pageLimit) && 0 < $pageLimit) {
+        // Only use the first X number of pages if $pageLimit is set and positive.
+        if (null !== $pageLimit && 0 < $pageLimit) {
             $pages = \array_slice($pages, 0, $pageLimit);
         }
 
-        foreach ($pages as $index => $page) {
+        foreach ($pages as $page) {
             /**
              * In some cases, the $page variable may be null.
              */
@@ -503,7 +474,7 @@ class Document
         return $this->trailer;
     }
 
-    public function setTrailer(Header $trailer)
+    public function setTrailer(Header $trailer): void
     {
         $this->trailer = $trailer;
     }

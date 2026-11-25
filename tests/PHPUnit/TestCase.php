@@ -46,9 +46,9 @@ abstract class TestCase extends PHPTestCase
     /**
      * Contains an instance of the class to test.
      */
-    protected $fixture;
+    protected mixed $fixture = null;
 
-    protected $rootDir;
+    protected string $rootDir = '';
 
     protected function setUp(): void
     {
@@ -62,7 +62,7 @@ abstract class TestCase extends PHPTestCase
         return new Document();
     }
 
-    protected function getElementInstance($value): Element
+    protected function getElementInstance(mixed $value): Element
     {
         return new Element($value);
     }

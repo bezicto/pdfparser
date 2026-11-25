@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * This file is based on code of tecnickcom/TCPDF PDF library.
  *
@@ -46,14 +48,17 @@ use Smalot\PdfParser\Exception\NotImplementedException;
 
 class FilterHelper
 {
-    protected $availableFilters = ['ASCIIHexDecode', 'ASCII85Decode', 'LZWDecode', 'FlateDecode', 'RunLengthDecode'];
+    /**
+     * @var array<int, string>
+     */
+    protected array $availableFilters = ['ASCIIHexDecode', 'ASCII85Decode', 'LZWDecode', 'FlateDecode', 'RunLengthDecode'];
 
     /**
      * Pre-initialized 256-entry LZW base dictionary (shared via copy-on-write).
      *
      * @var array<int, string>|null
      */
-    private static $lzwBaseDictionary;
+    private static ?array $lzwBaseDictionary = null;
 
     /**
      * Decode data using the specified filter type.
@@ -66,44 +71,25 @@ class FilterHelper
      * @return string Decoded data string
      *
      * @throws \Exception
-     * @throws \Smalot\PdfParser\Exception\NotImplementedException if a certain decode function is not implemented yet
+     * @throws NotImplementedException if a certain decode function is not implemented yet
      */
     public function decodeFilter(string $filter, string $data, int $decodeMemoryLimit = 0, array $decodeParms = []): string
     {
-        switch ($filter) {
-            case 'ASCIIHexDecode':
-                return $this->decodeFilterASCIIHexDecode($data);
-
-            case 'ASCII85Decode':
-                return $this->decodeFilterASCII85Decode($data);
-
-            case 'LZWDecode':
-                $earlyChange = isset($decodeParms['EarlyChange']) ? (int) $decodeParms['EarlyChange'] : 1;
-                $decoded = $this->decodeFilterLZWDecode($data, $decodeMemoryLimit, $earlyChange);
-
-                return $this->applyDecodeParmsPredictor($decoded, $decodeParms);
-
-            case 'FlateDecode':
-                $decoded = $this->decodeFilterFlateDecode($data, $decodeMemoryLimit);
-
-                return $this->applyDecodeParmsPredictor($decoded, $decodeParms);
-
-            case 'RunLengthDecode':
-                return $this->decodeFilterRunLengthDecode($data, $decodeMemoryLimit);
-
-            case 'CCITTFaxDecode':
-                throw new NotImplementedException('Decode CCITTFaxDecode not implemented yet.');
-            case 'JBIG2Decode':
-                throw new NotImplementedException('Decode JBIG2Decode not implemented yet.');
-            case 'DCTDecode':
-                throw new NotImplementedException('Decode DCTDecode not implemented yet.');
-            case 'JPXDecode':
-                throw new NotImplementedException('Decode JPXDecode not implemented yet.');
-            case 'Crypt':
-                throw new NotImplementedException('Decode Crypt not implemented yet.');
-            default:
-                return $data;
-        }
+        return match ($filter) {
+            'ASCIIHexDecode' => $this->decodeFilterASCIIHexDecode($data),
+            'ASCII85Decode' => $this->decodeFilterASCII85Decode($data),
+            'LZWDecode' => $this->applyDecodeParmsPredictor(
+                $this->decodeFilterLZWDecode($data, $decodeMemoryLimit, (int) ($decodeParms['EarlyChange'] ?? 1)),
+                $decodeParms
+            ),
+            'FlateDecode' => $this->applyDecodeParmsPredictor(
+                $this->decodeFilterFlateDecode($data, $decodeMemoryLimit),
+                $decodeParms
+            ),
+            'RunLengthDecode' => $this->decodeFilterRunLengthDecode($data, $decodeMemoryLimit),
+            'CCITTFaxDecode', 'JBIG2Decode', 'DCTDecode', 'JPXDecode', 'Crypt' => throw new NotImplementedException("Decode {$filter} not implemented yet."),
+            default => $data,
+        };
     }
 
     /**
@@ -120,9 +106,9 @@ class FilterHelper
             return $data;
         }
 
-        $columns = isset($decodeParms['Columns']) ? (int) $decodeParms['Columns'] : 1;
-        $colors = isset($decodeParms['Colors']) ? (int) $decodeParms['Colors'] : 1;
-        $bitsPerComponent = isset($decodeParms['BitsPerComponent']) ? (int) $decodeParms['BitsPerComponent'] : 8;
+        $columns = (int) ($decodeParms['Columns'] ?? 1);
+        $colors = (int) ($decodeParms['Colors'] ?? 1);
+        $bitsPerComponent = (int) ($decodeParms['BitsPerComponent'] ?? 8);
 
         return $this->decodePredictor($data, $predictor, $columns, $colors, $bitsPerComponent);
     }
@@ -260,7 +246,7 @@ class FilterHelper
     protected function decodeFilterASCIIHexDecode(string $data): string
     {
         // all white-space characters shall be ignored
-        $data = preg_replace('/[\s]/', '', $data);
+        $data = (string) preg_replace('/[\s]/', '', $data);
         // check for EOD character: GREATER-THAN SIGN (3Eh)
         $eod = strpos($data, '>');
         if (false !== $eod) {
@@ -270,7 +256,7 @@ class FilterHelper
         }
         // get data length
         $data_length = \strlen($data);
-        if (0 != ($data_length % 2)) {
+        if (0 !== ($data_length % 2)) {
             // odd number of hexadecimal digits
             if ($eod) {
                 // ISO 32000-1:2008, 7.4.2: EOD shall behave as if a 0 followed the last digit
@@ -284,9 +270,7 @@ class FilterHelper
             throw new \Exception('decodeFilterASCIIHexDecode: invalid code');
         }
         // get one byte of binary data for each pair of ASCII hexadecimal digits
-        $decoded = pack('H*', $data);
-
-        return $decoded;
+        return pack('H*', $data);
     }
 
     /**
@@ -305,10 +289,10 @@ class FilterHelper
         // initialize string to return
         $decoded = '';
         // all white-space characters shall be ignored
-        $data = preg_replace('/[\s]/', '', $data);
+        $data = (string) preg_replace('/[\s]/', '', $data);
         // remove start sequence 2-character sequence <~ (3Ch)(7Eh)
-        if (0 === strpos($data, '<~')) {
-            // remove EOD and extra data (if any)
+        if (str_starts_with($data, '<~')) {
+            // remove start sequence
             $data = substr($data, 2);
         }
         // check for EOD: 2-character sequence ~> (7Eh)(3Eh)
@@ -359,22 +343,13 @@ class FilterHelper
             $tuple += $pow85[$group_pos - 1];
         }
         // last tuple (if any)
-        switch ($group_pos) {
-            case 4:
-                $decoded .= substr(pack('N', $tuple), 0, 3);
-                break;
-
-            case 3:
-                $decoded .= substr(pack('N', $tuple), 0, 2);
-                break;
-
-            case 2:
-                $decoded .= \chr(($tuple >> 24) & 0xFF);
-                break;
-
-            case 1:
-                throw new \Exception('decodeFilterASCII85Decode: invalid code');
-        }
+        $decoded .= match ($group_pos) {
+            4 => substr(pack('N', $tuple), 0, 3),
+            3 => substr(pack('N', $tuple), 0, 2),
+            2 => \chr(($tuple >> 24) & 0xFF),
+            1 => throw new \Exception('decodeFilterASCII85Decode: invalid code'),
+            default => '',
+        };
 
         return $decoded;
     }
@@ -393,7 +368,7 @@ class FilterHelper
      *
      * @see https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/PDF32000_2008.pdf#page=33 ISO 32000-1:2008, 7.4.4 (LZWDecode and FlateDecode filters)
      */
-    protected function decodeFilterFlateDecode(string $data, int $decodeMemoryLimit): ?string
+    protected function decodeFilterFlateDecode(string $data, int $decodeMemoryLimit): string
     {
         if ('' === $data) {
             throw new \Exception('decodeFilterFlateDecode: invalid data');
@@ -428,7 +403,7 @@ class FilterHelper
             }
         }
 
-        if (!\is_string($decoded) || '' === $decoded) {
+        if (null === $decoded || '' === $decoded) {
             throw new \Exception('decodeFilterFlateDecode: invalid data');
         }
 
@@ -645,7 +620,7 @@ class FilterHelper
     }
 
     /**
-     * @return array list of available filters
+     * @return array<int, string> list of available filters
      */
     public function getAvailableFilters(): array
     {

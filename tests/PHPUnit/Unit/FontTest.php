@@ -241,7 +241,7 @@ class FontTest extends TestCase
         $result = $sut->decodeText($commands);
 
         // check that \b is not part of the result anymore
-        self::assertFalse(strpos($result, "\b>"));
+        self::assertStringNotContainsString("\b>", $result);
 
         // compare result with expected value
         self::assertEquals('3cc2ab083e', bin2hex($result));

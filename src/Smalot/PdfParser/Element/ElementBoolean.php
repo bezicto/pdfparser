@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -40,32 +42,35 @@ use Smalot\PdfParser\Element;
  */
 class ElementBoolean extends Element
 {
-    /**
-     * @param string|bool $value
-     */
-    public function __construct($value)
+    public function __construct(string|bool $value)
     {
-        parent::__construct('true' == strtolower($value) || true === $value, null);
+        parent::__construct(\is_bool($value) ? $value : 'true' === strtolower($value), null);
     }
 
+    #[\Override]
+    public function getContent(): bool
+    {
+        return (bool) $this->value;
+    }
+
+    #[\Override]
     public function __toString(): string
     {
         return $this->value ? 'true' : 'false';
     }
 
-    public function equals($value): bool
+    #[\Override]
+    public function equals(mixed $value): bool
     {
         return $this->getContent() === $value;
     }
 
-    /**
-     * @return bool|ElementBoolean
-     */
-    public static function parse(string $content, ?Document $document = null, int &$offset = 0)
+    #[\Override]
+    public static function parse(string $content, ?Document $document = null, int &$offset = 0, bool $only_values = false): self|false
     {
-        if (preg_match('/^\s*(?P<value>true|false)/is', $content, $match)) {
+        if (1 === preg_match('/^\s*(?P<value>true|false)/is', $content, $match)) {
             $value = $match['value'];
-            $offset += strpos($content, $value) + \strlen($value);
+            $offset += (int) strpos($content, $value) + \strlen($value);
 
             return new self($value);
         }

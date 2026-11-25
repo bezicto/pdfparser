@@ -19,7 +19,7 @@ This repository is an enhanced fork of [`smalot/pdfparser`](https://github.com/s
 
 ## Requirements
 
-- **PHP 7.1 or newer** (compatible with PHP 7.x and PHP 8.x)
+- **PHP 8.5 or newer**
 - PHP `zlib` and `iconv` extensions (enabled by default in standard PHP installations)
 
 ---

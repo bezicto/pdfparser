@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -41,25 +43,23 @@ use Smalot\PdfParser\Header;
  */
 class ElementStruct extends Element
 {
-    /**
-     * @return false|Header
-     */
-    public static function parse(string $content, ?Document $document = null, int &$offset = 0)
+    #[\Override]
+    public static function parse(string $content, ?Document $document = null, int &$offset = 0, bool $only_values = false): Header|false
     {
-        if (preg_match('/^\s*<<(?P<struct>.*)/is', $content)) {
+        if (1 === preg_match('/^\s*<<(?P<struct>.*)/is', $content)) {
             preg_match_all('/(.*?)(<<|>>)/s', trim($content), $matches);
 
             $level = 0;
             $sub = '';
             foreach ($matches[0] as $part) {
                 $sub .= $part;
-                $level += (false !== strpos($part, '<<') ? 1 : -1);
+                $level += str_contains($part, '<<') ? 1 : -1;
                 if ($level <= 0) {
                     break;
                 }
             }
 
-            $offset += strpos($content, '<<') + \strlen(rtrim($sub));
+            $offset += (int) strpos($content, '<<') + \strlen(rtrim($sub));
 
             // Removes '<<' and '>>'.
             $sub = trim((string) preg_replace('/^\s*<<(.*)>>\s*$/s', '\\1', $sub));
@@ -67,7 +67,7 @@ class ElementStruct extends Element
             $position = 0;
             $elements = Element::parse($sub, $document, $position);
 
-            return new Header($elements, $document);
+            return new Header(\is_array($elements) ? $elements : [], $document);
         }
 
         return false;

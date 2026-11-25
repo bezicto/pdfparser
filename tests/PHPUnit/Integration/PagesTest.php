@@ -49,10 +49,8 @@ class PagesDummy extends Pages
      * work to setup instances which lead to a valid $fonts variable.
      *
      * @param array<\Smalot\PdfParser\Font> $fonts
-     *
-     * @return void
      */
-    public function setFonts($fonts)
+    public function setFonts(array $fonts): void
     {
         $this->fonts = $fonts;
     }

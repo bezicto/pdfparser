@@ -41,13 +41,13 @@ use Smalot\PdfParser\PDFObject;
 
 class PDFObjectTest extends TestCase
 {
-    public const TYPE = 't';
+    public const string TYPE = 't';
 
-    public const OPERATOR = 'o';
+    public const string OPERATOR = 'o';
 
-    public const COMMAND = 'c';
+    public const string COMMAND = 'c';
 
-    protected function getPdfObjectInstance($document): PDFObject
+    protected function getPdfObjectInstance(Document $document): PDFObject
     {
         return new PDFObject($document);
     }
@@ -67,12 +67,7 @@ class PDFObjectTest extends TestCase
      */
     private function formatContent(string $content): string
     {
-        $formatContent = new \ReflectionMethod('Smalot\PdfParser\PDFObject', 'formatContent');
-
-        // TODO: remove this if-clause when dropping 8.0.x support
-        if (version_compare(\PHP_VERSION, '8.1.0', '<')) {
-            $formatContent->setAccessible(true);
-        }
+        $formatContent = new \ReflectionMethod(PDFObject::class, 'formatContent');
 
         return $formatContent->invoke($this->getPdfObjectInstance(new Document()), $content);
     }
@@ -326,14 +321,7 @@ q
         // Normalize line-endings
         $expected = str_replace(["\r\n", "\n"], ["\n", "\r\n"], $expected);
 
-        $formatContent = new \ReflectionMethod('Smalot\PdfParser\PDFObject', 'formatContent');
-
-        // TODO: remove this if-clause when dropping 8.0.x support
-        // From documentation > http://php.net/manual/en/reflectionproperty.setaccessible.php:
-        // As of PHP 8.1.0, calling this method has no effect; all properties are accessible by default.
-        if (version_compare(PHP_VERSION, '8.1.0', '<')) {
-            $formatContent->setAccessible(true);
-        }
+        $formatContent = new \ReflectionMethod(PDFObject::class, 'formatContent');
 
         $cleaned = $formatContent->invoke($this->getPdfObjectInstance(new Document()), $content);
 
@@ -371,16 +359,9 @@ q
      *
      * @see https://github.com/smalot/pdfparser/issues/709
      */
-    public function testFormatContentIssue709()
+    public function testFormatContentIssue709(): void
     {
-        $formatContent = new \ReflectionMethod('Smalot\PdfParser\PDFObject', 'formatContent');
-
-        // TODO: remove this if-clause when dropping 8.0.x support
-        // From documentation > http://php.net/manual/en/reflectionproperty.setaccessible.php:
-        // As of PHP 8.1.0, calling this method has no effect; all properties are accessible by default.
-        if (version_compare(PHP_VERSION, '8.1.0', '<')) {
-            $formatContent->setAccessible(true);
-        }
+        $formatContent = new \ReflectionMethod(PDFObject::class, 'formatContent');
 
         $content = '(String \\\\\\(string)Tj '.str_repeat('(Test)Tj ', 4500);
         $cleaned = $formatContent->invoke($this->getPdfObjectInstance(new Document()), $content);
@@ -395,14 +376,7 @@ q
      */
     public function testFormatContentInlineImages(): void
     {
-        $formatContent = new \ReflectionMethod('Smalot\PdfParser\PDFObject', 'formatContent');
-
-        // TODO: remove this if-clause when dropping 8.0.x support
-        // From documentation > http://php.net/manual/en/reflectionproperty.setaccessible.php:
-        // As of PHP 8.1.0, calling this method has no effect; all properties are accessible by default.
-        if (version_compare(PHP_VERSION, '8.1.0', '<')) {
-            $formatContent->setAccessible(true);
-        }
+        $formatContent = new \ReflectionMethod(PDFObject::class, 'formatContent');
 
         $cleaned = $formatContent->invoke(
             $this->getPdfObjectInstance(new Document()),
@@ -443,12 +417,7 @@ q
      */
     public function testFormatContentStringsAndDictionaries(): void
     {
-        $formatContent = new \ReflectionMethod('Smalot\PdfParser\PDFObject', 'formatContent');
-
-        // TODO: remove this if-clause when dropping 8.0.x support
-        if (version_compare(\PHP_VERSION, '8.1.0', '<')) {
-            $formatContent->setAccessible(true);
-        }
+        $formatContent = new \ReflectionMethod(PDFObject::class, 'formatContent');
 
         $cases = [
             'operands with the same content' => [
@@ -581,9 +550,7 @@ ET';
 
         $expected = ['q', 'BT', '/F1 12 Tf', '(Hello) Tj', 'ET', 'Q', 'BT', '(Tail) Tj', 'ET'];
 
-        $positionOfProbe = function (string $formatted) use ($probeFormatted) {
-            return strpos($formatted, $probeFormatted);
-        };
+        $positionOfProbe = static fn (string $formatted): int|false => strpos($formatted, $probeFormatted);
 
         // From the \r of the line before the probe up to the second byte of
         // the line following the probe
@@ -627,7 +594,7 @@ ET';
         $trailer = "q\nBT\n(End) Tj\nET";
 
         for ($length = $chunkSize - 1; $length <= $chunkSize + 6; ++$length) {
-            $content = $this->fitPaddedStream($trailer, 'strlen', $length);
+            $content = $this->fitPaddedStream($trailer, \strlen(...), $length);
 
             // Make sure the test setup does what it claims to do
             $this->assertSame(

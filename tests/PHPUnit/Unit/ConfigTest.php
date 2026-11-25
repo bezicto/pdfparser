@@ -57,7 +57,7 @@ class ConfigTest extends TestCase
     /**
      * Tests setter and getter for horizontal offset.
      */
-    public function testHorizontalOffsetSetterGetter()
+    public function testHorizontalOffsetSetterGetter(): void
     {
         $this->assertEquals(' ', $this->fixture->getHorizontalOffset());
 

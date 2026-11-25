@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -34,6 +36,7 @@ namespace Smalot\PdfParser\Element;
 
 use Smalot\PdfParser\Document;
 use Smalot\PdfParser\Element;
+use Smalot\PdfParser\PDFObject;
 
 /**
  * Class ElementXRef
@@ -42,15 +45,16 @@ class ElementXRef extends Element
 {
     public function getId(): string
     {
-        return $this->getContent();
+        return (string) $this->getContent();
     }
 
-    public function getObject()
+    public function getObject(): PDFObject|Element|null
     {
-        return $this->document->getObjectById($this->getId());
+        return $this->document?->getObjectById($this->getId());
     }
 
-    public function equals($value): bool
+    #[\Override]
+    public function equals(mixed $value): bool
     {
         /**
          * In case $value is a number and $this->value is a string like 5_0
@@ -62,32 +66,32 @@ class ElementXRef extends Element
          *
          * would fail (= 5_0 and 5 are not equal in PHP 8.0+).
          */
+        $content = $this->getContent();
         if (
-            true === is_numeric($value)
-            && true === \is_string($this->getContent())
-            && 1 === preg_match('/[0-9]+\_[0-9]+/', $this->getContent(), $matches)
+            is_numeric($value)
+            && \is_string($content)
+            && 1 === preg_match('/[0-9]+\_[0-9]+/', $content)
         ) {
-            return (float) $this->getContent() == $value;
+            return (float) $content == $value;
         }
 
-        $id = ($value instanceof self) ? $value->getId() : $value;
+        $id = $value instanceof self ? $value->getId() : $value;
 
         return $this->getId() == $id;
     }
 
+    #[\Override]
     public function __toString(): string
     {
         return '#Obj#'.$this->getId();
     }
 
-    /**
-     * @return bool|ElementXRef
-     */
-    public static function parse(string $content, ?Document $document = null, int &$offset = 0)
+    #[\Override]
+    public static function parse(string $content, ?Document $document = null, int &$offset = 0, bool $only_values = false): self|false
     {
-        if (preg_match('/^\s*(?P<id>[0-9]+\s+[0-9]+\s+R)/s', $content, $match)) {
+        if (1 === preg_match('/^\s*(?P<id>[0-9]+\s+[0-9]+\s+R)/s', $content, $match)) {
             $id = $match['id'];
-            $offset += strpos($content, $id) + \strlen($id);
+            $offset += (int) strpos($content, $id) + \strlen($id);
             $id = str_replace(' ', '_', rtrim($id, ' R'));
 
             return new self($id, $document);

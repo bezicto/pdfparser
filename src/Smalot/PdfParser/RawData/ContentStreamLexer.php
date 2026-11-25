@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -29,24 +31,24 @@ class ContentStreamLexer
     /**
      * PDF whitespace bytes: NUL, HT, LF, FF, CR, SP (ISO 32000-1, Table 1).
      */
-    private const WHITESPACE = "\x00\x09\x0a\x0c\x0d\x20";
+    private const string WHITESPACE = "\x00\x09\x0a\x0c\x0d\x20";
 
     /**
      * PDF delimiter + whitespace bytes (ISO 32000-1, Table 1 & Table 2).
      */
-    private const DELIMITERS = "\x00\x09\x0a\x0c\x0d\x20()[]<>{}/%";
+    private const string DELIMITERS = "\x00\x09\x0a\x0c\x0d\x20()[]<>{}/%";
 
     /**
      * Printable ASCII + allowed whitespace bytes for fast binary-stream rejection.
      */
-    private const ALLOWED_ASCII = "\x09\x0a\x0d !\"#\$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+    private const string ALLOWED_ASCII = "\x09\x0a\x0d !\"#\$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
 
     /**
      * Fast-skip scanner outside BT ... ET blocks.
      * Skips comments (%...), PDF names (/...), and hex strings (<...>) in C-level PCRE-JIT,
      * stopping only on literal strings '(', dictionaries '<<', or text-relevant operators.
      */
-    private const OUTSIDE_BT_PATTERN = '/%[^\r\n]*(*SKIP)(*FAIL)|\/[^\x00\x09\x0a\x0c\x0d\x20()\[\]<>{}\/%]*(*SKIP)(*FAIL)|<(?!<)[^>]*>(*SKIP)(*FAIL)|\(|<<|(?<=^|[\x00\x09\x0a\x0c\x0d\x20()\[\]<>{}\/%])(?:BT|BI|q|Q|cm|Tf|Do|BDC|BMC|EMC)(?=$|[\x00\x09\x0a\x0c\x0d\x20()\[\]<>{}\/%])/';
+    private const string OUTSIDE_BT_PATTERN = '/%[^\r\n]*(*SKIP)(*FAIL)|\/[^\x00\x09\x0a\x0c\x0d\x20()\[\]<>{}\/%]*(*SKIP)(*FAIL)|<(?!<)[^>]*>(*SKIP)(*FAIL)|\(|<<|(?<=^|[\x00\x09\x0a\x0c\x0d\x20()\[\]<>{}\/%])(?:BT|BI|q|Q|cm|Tf|Do|BDC|BMC|EMC)(?=$|[\x00\x09\x0a\x0c\x0d\x20()\[\]<>{}\/%])/';
 
     /**
      * Detect whether a stream appears to be raw binary data rather than a PDF content stream.
@@ -72,7 +74,7 @@ class ContentStreamLexer
                 break;
             }
             $nextIdx = $idPos + 2;
-            if ($nextIdx < $len && false !== strpos(" \t\r\n\f\v", $content[$nextIdx])) {
+            if ($nextIdx < $len && str_contains(" \t\r\n\f\v", $content[$nextIdx])) {
                 $prefixEnd = $idPos;
                 break;
             }
@@ -117,9 +119,9 @@ class ContentStreamLexer
 
         // Fast exit: streams containing no BT, Do, or ActualText can never emit text
         if (
-            false === strpos($content, 'BT')
-            && false === strpos($content, 'Do')
-            && false === strpos($content, 'ActualText')
+            !str_contains($content, 'BT')
+            && !str_contains($content, 'Do')
+            && !str_contains($content, 'ActualText')
         ) {
             return [];
         }
@@ -568,7 +570,7 @@ class ContentStreamLexer
             : substr($content, $start);
 
         // Collapse PDF escaped line continuations (ISO 32000-1, 7.3.4.2)
-        if ($hasBackslash && (false !== strpos($raw, "\\\n") || false !== strpos($raw, "\\\r"))) {
+        if ($hasBackslash && (str_contains($raw, "\\\n") || str_contains($raw, "\\\r"))) {
             $raw = str_replace(["\\\r\n", "\\\r", "\\\n"], '', $raw);
         }
 
@@ -722,9 +724,9 @@ class ContentStreamLexer
 
         // Step 2: locate terminating EI preceded by whitespace and followed by whitespace/EOF
         while ($pos < $len && false !== ($eiPos = strpos($content, 'EI', $pos))) {
-            $beforeOk = $eiPos > 0 && false !== strpos(self::WHITESPACE, $content[$eiPos - 1]);
+            $beforeOk = $eiPos > 0 && str_contains(self::WHITESPACE, $content[$eiPos - 1]);
             $afterIdx = $eiPos + 2;
-            $afterOk = $afterIdx >= $len || false !== strpos(self::DELIMITERS, $content[$afterIdx]);
+            $afterOk = $afterIdx >= $len || str_contains(self::DELIMITERS, $content[$afterIdx]);
             if ($beforeOk && $afterOk) {
                 return $afterIdx;
             }
@@ -745,14 +747,14 @@ class ContentStreamLexer
         $nums = [];
 
         for ($n = 0; $n < $count; ++$n) {
-            while ($idx >= 0 && false !== strpos(self::WHITESPACE, $content[$idx])) {
+            while ($idx >= 0 && str_contains(self::WHITESPACE, $content[$idx])) {
                 --$idx;
             }
             if ($idx < 0) {
                 return null;
             }
             $end = $idx + 1;
-            while ($idx >= 0 && false === strpos(self::DELIMITERS, $content[$idx])) {
+            while ($idx >= 0 && !str_contains(self::DELIMITERS, $content[$idx])) {
                 --$idx;
             }
             $tok = substr($content, $idx + 1, $end - $idx - 1);
@@ -773,14 +775,14 @@ class ContentStreamLexer
     private static function extractTrailingTf(string $content, int $opPos): ?array
     {
         $idx = $opPos - 1;
-        while ($idx >= 0 && false !== strpos(self::WHITESPACE, $content[$idx])) {
+        while ($idx >= 0 && str_contains(self::WHITESPACE, $content[$idx])) {
             --$idx;
         }
         if ($idx < 0) {
             return null;
         }
         $sizeEnd = $idx + 1;
-        while ($idx >= 0 && false === strpos(self::DELIMITERS, $content[$idx])) {
+        while ($idx >= 0 && !str_contains(self::DELIMITERS, $content[$idx])) {
             --$idx;
         }
         $sizeTok = substr($content, $idx + 1, $sizeEnd - $idx - 1);
@@ -802,14 +804,14 @@ class ContentStreamLexer
     private static function extractTrailingName(string $content, int $opPos): ?string
     {
         $idx = $opPos - 1;
-        while ($idx >= 0 && false !== strpos(self::WHITESPACE, $content[$idx])) {
+        while ($idx >= 0 && str_contains(self::WHITESPACE, $content[$idx])) {
             --$idx;
         }
         if ($idx < 0) {
             return null;
         }
         $end = $idx + 1;
-        while ($idx >= 0 && false === strpos(self::DELIMITERS, $content[$idx])) {
+        while ($idx >= 0 && !str_contains(self::DELIMITERS, $content[$idx])) {
             --$idx;
         }
         if ($idx < 0 || '/' !== $content[$idx]) {

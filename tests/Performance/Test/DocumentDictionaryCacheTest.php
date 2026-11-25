@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file This file is part of the PdfParser library.
  *
@@ -46,20 +48,19 @@ use Smalot\PdfParser\Parser;
  */
 class DocumentDictionaryCacheTest extends AbstractPerformanceTest
 {
-    /**
-     * @var Parser
-     */
-    protected $parser;
-    protected $data;
+    protected Parser $parser;
+    protected string $data;
 
+    #[\Override]
     public function init(): void
     {
         $this->parser = new Parser();
 
         // load PDF file content
-        $this->data = file_get_contents(__DIR__.'/../../../samples/DocumentWithLotsOfObjects.pdf');
+        $this->data = (string) file_get_contents(__DIR__.'/../../../samples/DocumentWithLotsOfObjects.pdf');
     }
 
+    #[\Override]
     public function run(): void
     {
         // give PDF content to function and parse it
@@ -79,6 +80,7 @@ class DocumentDictionaryCacheTest extends AbstractPerformanceTest
         }
     }
 
+    #[\Override]
     public function getMaxEstimatedTime(): int
     {
         return 20;

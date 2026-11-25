@@ -40,7 +40,7 @@ use Smalot\PdfParser\Config;
 
 class ConfigTest extends TestCase
 {
-    public function testHorizontalOffset()
+    public function testHorizontalOffset(): void
     {
         $filename = $this->rootDir.'/samples/bugs/Issue494.pdf';
 

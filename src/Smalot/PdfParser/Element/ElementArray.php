@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -42,12 +44,13 @@ use Smalot\PdfParser\PDFObject;
  */
 class ElementArray extends Element
 {
-    public function __construct($value, ?Document $document = null)
+    public function __construct(array $value, ?Document $document = null)
     {
         parent::__construct($value, $document);
     }
 
-    public function getContent()
+    #[\Override]
+    public function getContent(): array
     {
         foreach ($this->value as $name => $element) {
             $this->resolveXRef($name);
@@ -75,7 +78,7 @@ class ElementArray extends Element
                 if ($deep) {
                     $values[$key] = $element->getDetails();
                 }
-            } elseif ($element instanceof Element && !($element instanceof self)) {
+            } elseif ($element instanceof Element) {
                 $values[$key] = $element->getContent();
             }
         }
@@ -83,18 +86,15 @@ class ElementArray extends Element
         return $values;
     }
 
+    #[\Override]
     public function __toString(): string
     {
         return implode(',', $this->value);
     }
 
-    /**
-     * @return Element|PDFObject
-     */
-    protected function resolveXRef(string $name)
+    protected function resolveXRef(int|string $name): Element|PDFObject|Header|null
     {
         if (($obj = $this->value[$name]) instanceof ElementXRef && null !== $this->document) {
-            /** @var ElementXRef $obj */
             $obj = $this->document->getObjectById($obj->getId());
             $this->value[$name] = $obj;
         }
@@ -102,21 +102,17 @@ class ElementArray extends Element
         return $this->value[$name];
     }
 
-    /**
-     * @todo: These methods return mixed and mismatched types throughout the hierarchy
-     *
-     * @return bool|ElementArray
-     */
-    public static function parse(string $content, ?Document $document = null, int &$offset = 0)
+    #[\Override]
+    public static function parse(string $content, ?Document $document = null, int &$offset = 0, bool $only_values = false): self|false
     {
-        if (preg_match('/^\s*\[(?P<array>.*)/is', $content, $match)) {
+        if (1 === preg_match('/^\s*\[(?P<array>.*)/is', $content)) {
             preg_match_all('/(.*?)(\[|\])/s', trim($content), $matches);
 
             $level = 0;
             $sub = '';
             foreach ($matches[0] as $part) {
                 $sub .= $part;
-                $level += (false !== strpos($part, '[') ? 1 : -1);
+                $level += str_contains($part, '[') ? 1 : -1;
                 if ($level <= 0) {
                     break;
                 }
@@ -127,11 +123,11 @@ class ElementArray extends Element
             $sub_offset = 0;
             $values = Element::parse($sub, $document, $sub_offset, true);
 
-            $offset += strpos($content, '[') + 1;
+            $offset += (int) strpos($content, '[') + 1;
             // Find next ']' position
             $offset += \strlen($sub) + 1;
 
-            return new self($values, $document);
+            return new self(\is_array($values) ? $values : [], $document);
         }
 
         return false;

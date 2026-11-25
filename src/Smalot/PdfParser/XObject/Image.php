@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -40,6 +42,7 @@ use Smalot\PdfParser\PDFObject;
  */
 class Image extends PDFObject
 {
+    #[\Override]
     public function getText(?Page $page = null): string
     {
         return '';

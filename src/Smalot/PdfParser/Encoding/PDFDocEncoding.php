@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file    This file is part of the PdfParser library.
  *
@@ -39,9 +41,10 @@ namespace Smalot\PdfParser\Encoding;
  */
 class PDFDocEncoding
 {
-    public static function getCodePage(): array
-    {
-        return [
+    /**
+     * @var array<string, string>
+     */
+    private const array CODE_PAGE = [
             "\x18" => "\u{02d8}", // breve
             "\x19" => "\u{02c7}", // caron
             "\x1a" => "\u{02c6}", // circumflex
@@ -179,7 +182,11 @@ class PDFDocEncoding
             "\xfd" => "\u{00fd}", // yacute
             "\xfe" => "\u{00fe}", // thorn
             "\xff" => "\u{00ff}", // ydieresis
-        ];
+    ];
+
+    public static function getCodePage(): array
+    {
+        return self::CODE_PAGE;
     }
 
     public static function convertPDFDoc2UTF8(string $content): string

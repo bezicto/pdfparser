@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -20,60 +22,18 @@ namespace Smalot\PdfParser\RawData;
 class LazyStream
 {
     /**
-     * @var string
-     */
-    private $rawBytes;
-
-    /**
-     * @var array<int, string>
-     */
-    private $filters;
-
-    /**
-     * @var array<int, array<string, int>>
-     */
-    private $decodeParmsList;
-
-    /**
-     * @var FilterHelper
-     */
-    private $filterHelper;
-
-    /**
-     * @var int
-     */
-    private $decodeMemoryLimit;
-
-    /**
-     * @var bool
-     */
-    private $ignoreFilterErrors;
-
-    /**
-     * @var bool
-     */
-    private $ignoreMissingDecoders;
-
-    /**
      * @param array<int, string>             $filters
      * @param array<int, array<string, int>> $decodeParmsList
      */
     public function __construct(
-        string $rawBytes,
-        array $filters,
-        array $decodeParmsList,
-        FilterHelper $filterHelper,
-        int $decodeMemoryLimit,
-        bool $ignoreFilterErrors,
-        bool $ignoreMissingDecoders
+        private string $rawBytes,
+        private readonly array $filters,
+        private readonly array $decodeParmsList,
+        private readonly FilterHelper $filterHelper,
+        private readonly int $decodeMemoryLimit,
+        private readonly bool $ignoreFilterErrors,
+        private readonly bool $ignoreMissingDecoders,
     ) {
-        $this->rawBytes = $rawBytes;
-        $this->filters = $filters;
-        $this->decodeParmsList = $decodeParmsList;
-        $this->filterHelper = $filterHelper;
-        $this->decodeMemoryLimit = $decodeMemoryLimit;
-        $this->ignoreFilterErrors = $ignoreFilterErrors;
-        $this->ignoreMissingDecoders = $ignoreMissingDecoders;
     }
 
     /**
@@ -94,8 +54,9 @@ class LazyStream
                     $stream = $this->filterHelper->decodeFilter($filter, $stream, $this->decodeMemoryLimit, $parms);
                 } catch (\Exception $e) {
                     $emsg = $e->getMessage();
-                    if ((('~' == ($emsg[0] ?? '')) && !$this->ignoreMissingDecoders)
-                        || (('~' != ($emsg[0] ?? '')) && !$this->ignoreFilterErrors)
+                    $isMissingDecoder = str_starts_with($emsg, '~');
+                    if (($isMissingDecoder && !$this->ignoreMissingDecoders)
+                        || (!$isMissingDecoder && !$this->ignoreFilterErrors)
                     ) {
                         throw new \Exception($emsg);
                     }

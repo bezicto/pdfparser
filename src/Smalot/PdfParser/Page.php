@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -40,54 +42,61 @@ use Smalot\PdfParser\Element\ElementXRef;
 class Page extends PDFObject
 {
     /**
-     * @var Font[]
+     * Operators retained by getDataCommands() for Text Matrix (Tm) extraction.
+     *
+     * @var array<int, string>
      */
-    protected $fonts;
+    private const array DATA_COMMANDS = [
+        'BT', 'cm', 'ET', 'TL', 'Td', 'TD', 'Tm', 'T*',
+        'Tj', "'", '"', 'Tf', 'TF', 'TJ', 'q', 'Q',
+    ];
 
     /**
-     * @var PDFObject[]
+     * @var Font[]|null
      */
-    protected $xobjects;
+    protected ?array $fonts = null;
 
     /**
-     * @var array
+     * @var PDFObject[]|null
      */
-    protected $dataTm;
+    protected ?array $xobjects = null;
+
+    protected ?array $dataTm = null;
 
     /**
      * Inherited fonts propagated from ancestor /Pages nodes (ISO 32000-1, 7.7.3.4).
      *
      * @var Font[]
      */
-    protected $inheritedFonts = [];
+    protected array $inheritedFonts = [];
 
     /**
      * Inherited XObjects propagated from ancestor /Pages nodes (ISO 32000-1, 7.7.3.4).
      *
      * @var PDFObject[]
      */
-    protected $inheritedXObjects = [];
+    protected array $inheritedXObjects = [];
 
     /**
-     * @param array<\Smalot\PdfParser\Font> $fonts
+     * @param array<Font> $fonts
      *
      * @internal
      */
-    public function setFonts($fonts)
+    public function setFonts(array $fonts): void
     {
-        if (empty($this->fonts) && empty($this->inheritedFonts) && !empty($fonts)) {
+        if (empty($this->fonts) && [] === $this->inheritedFonts && [] !== $fonts) {
             $this->inheritedFonts = $fonts;
         }
     }
 
     /**
-     * @param array<\Smalot\PdfParser\PDFObject> $xobjects
+     * @param array<PDFObject> $xobjects
      *
      * @internal
      */
     public function setXObjects(array $xobjects): void
     {
-        if (empty($this->xobjects) && empty($this->inheritedXObjects) && !empty($xobjects)) {
+        if (empty($this->xobjects) && [] === $this->inheritedXObjects && [] !== $xobjects) {
             $this->inheritedXObjects = $xobjects;
         }
     }
@@ -95,7 +104,7 @@ class Page extends PDFObject
     /**
      * @return Font[]
      */
-    public function getFonts()
+    public function getFonts(): array
     {
         if (null !== $this->fonts) {
             return $this->fonts;
@@ -104,14 +113,15 @@ class Page extends PDFObject
         $resources = $this->get('Resources');
 
         if (method_exists($resources, 'has') && $resources->has('Font')) {
-            if ($resources->get('Font') instanceof ElementMissing) {
+            $fontRes = $resources->get('Font');
+            if ($fontRes instanceof ElementMissing) {
                 return $this->inheritedFonts;
             }
 
-            if ($resources->get('Font') instanceof Header) {
-                $fonts = $resources->get('Font')->getElements();
+            if ($fontRes instanceof Header) {
+                $fonts = $fontRes->getElements();
             } else {
-                $fonts = $resources->get('Font')->getHeader()->getElements();
+                $fonts = $fontRes->getHeader()->getElements();
             }
 
             $table = $this->inheritedFonts;
@@ -121,8 +131,8 @@ class Page extends PDFObject
                     $table[$id] = $font;
 
                     // Store fallback cleaned id value (only numeric) without overwriting exact keys
-                    $cleanId = preg_replace('/[^0-9\.\-_]/', '', $id);
-                    if ('' != $cleanId && !isset($table[$cleanId])) {
+                    $cleanId = preg_replace('/[^0-9\.\-_]/', '', (string) $id);
+                    if ('' !== $cleanId && null !== $cleanId && !isset($table[$cleanId])) {
                         $table[$cleanId] = $font;
                     }
                 }
@@ -138,24 +148,16 @@ class Page extends PDFObject
     {
         $fonts = $this->getFonts();
 
-        if (isset($fonts[$id])) {
-            return $fonts[$id];
-        }
-
         // According to the PDF specs (https://www.adobe.com/content/dam/acom/en/devnet/pdf/pdfs/PDF32000_2008.pdf, page 238)
         // "The font resource name presented to the Tf operator is arbitrary, as are the names for all kinds of resources"
-        // Instead, we search for the unfiltered name first and then do this cleaning as a fallback, so all tests still pass.
-
+        // Search for the unfiltered name first and then fall back to the cleaned id.
         if (isset($fonts[$id])) {
             return $fonts[$id];
-        } else {
-            $id = preg_replace('/[^0-9\.\-_]/', '', $id);
-            if (isset($fonts[$id])) {
-                return $fonts[$id];
-            }
         }
 
-        return null;
+        $cleanId = (string) preg_replace('/[^0-9\.\-_]/', '', $id);
+
+        return $fonts[$cleanId] ?? null;
     }
 
     /**
@@ -163,7 +165,7 @@ class Page extends PDFObject
      *
      * @return PDFObject[]
      */
-    public function getXObjects()
+    public function getXObjects(): array
     {
         if (null !== $this->xobjects) {
             return $this->xobjects;
@@ -172,10 +174,11 @@ class Page extends PDFObject
         $resources = $this->get('Resources');
 
         if (method_exists($resources, 'has') && $resources->has('XObject')) {
-            if ($resources->get('XObject') instanceof Header) {
-                $xobjects = $resources->get('XObject')->getElements();
+            $xobjRes = $resources->get('XObject');
+            if ($xobjRes instanceof Header) {
+                $xobjects = $xobjRes->getElements();
             } else {
-                $xobjects = $resources->get('XObject')->getHeader()->getElements();
+                $xobjects = $xobjRes->getHeader()->getElements();
             }
 
             $table = $this->inheritedXObjects;
@@ -184,8 +187,8 @@ class Page extends PDFObject
                 $table[$id] = $xobject;
 
                 // Store fallback cleaned id value (only numeric) without overwriting exact keys
-                $cleanId = preg_replace('/[^0-9\.\-_]/', '', $id);
-                if ('' != $cleanId && !isset($table[$cleanId])) {
+                $cleanId = preg_replace('/[^0-9\.\-_]/', '', (string) $id);
+                if ('' !== $cleanId && null !== $cleanId && !isset($table[$cleanId])) {
                     $table[$cleanId] = $xobject;
                 }
             }
@@ -200,73 +203,60 @@ class Page extends PDFObject
     {
         $xobjects = $this->getXObjects();
 
-        if (isset($xobjects[$id])) {
-            return $xobjects[$id];
-        }
-
-        return null;
-        /*$id = preg_replace('/[^0-9\.\-_]/', '', $id);
-
-        if (isset($xobjects[$id])) {
-            return $xobjects[$id];
-        } else {
-            return null;
-        }*/
+        return $xobjects[$id] ?? null;
     }
 
+    #[\Override]
     public function getText(?self $page = null): string
     {
-        if ($contents = $this->get('Contents')) {
-            if ($contents instanceof ElementMissing) {
-                return '';
-            } elseif ($contents instanceof ElementNull) {
-                return '';
-            } elseif ($contents instanceof PDFObject) {
-                $elements = $contents->getHeader()->getElements();
+        $contents = $this->get('Contents');
+        if ($contents instanceof ElementMissing || $contents instanceof ElementNull) {
+            return '';
+        }
 
-                if (is_numeric(key($elements))) {
-                    $new_content = '';
+        if ($contents instanceof PDFObject) {
+            $elements = $contents->getHeader()->getElements();
 
-                    foreach ($elements as $element) {
-                        if ($element instanceof ElementXRef) {
-                            $obj = $element->getObject();
-                            if (null !== $obj) {
-                                $new_content .= $obj->getContent();
-                            }
-                        } elseif (null !== $element) {
-                            $new_content .= $element->getContent();
-                        }
-                    }
-
-                    $header = new Header([], $this->document);
-                    $contents = new PDFObject($this->document, $header, $new_content, $this->config);
-                }
-            } elseif ($contents instanceof ElementArray) {
-                // Create a virtual global content.
+            if (is_numeric(key($elements))) {
                 $new_content = '';
 
-                foreach ($contents->getContent() as $content) {
-                    if (null !== $content) {
-                        $new_content .= $content->getContent()."\n";
+                foreach ($elements as $element) {
+                    if ($element instanceof ElementXRef) {
+                        $obj = $element->getObject();
+                        if (null !== $obj) {
+                            $new_content .= $obj->getContent();
+                        }
+                    } elseif (null !== $element) {
+                        $new_content .= $element->getContent();
                     }
                 }
 
                 $header = new Header([], $this->document);
                 $contents = new PDFObject($this->document, $header, $new_content, $this->config);
             }
+        } elseif ($contents instanceof ElementArray) {
+            // Create a virtual global content.
+            $new_content = '';
 
-            /*
-             * Elements referencing each other on the same page can cause endless loops during text parsing.
-             * To combat this we keep a recursionStack containing already parsed elements on the page.
-             * The stack is only emptied here after getting text from a page.
-             */
-            $contentsText = $contents->getText($this);
-            PDFObject::$recursionStack = [];
+            foreach ($contents->getContent() as $content) {
+                if (null !== $content) {
+                    $new_content .= $content->getContent()."\n";
+                }
+            }
 
-            return $contentsText;
+            $header = new Header([], $this->document);
+            $contents = new PDFObject($this->document, $header, $new_content, $this->config);
         }
 
-        return '';
+        /*
+         * Elements referencing each other on the same page can cause endless loops during text parsing.
+         * To combat this we keep a recursionStack containing already parsed elements on the page.
+         * The stack is only emptied here after getting text from a page.
+         */
+        $contentsText = $contents->getText($this);
+        PDFObject::$recursionStack = [];
+
+        return $contentsText;
     }
 
     /**
@@ -275,17 +265,15 @@ class Page extends PDFObject
      * The metadata 'Producer' should have the value of "FPDF" . FPDF_VERSION if the
      * pdf file was generated by FPDF/Fpfi.
      *
-     * @return bool true is the current page is a FPDI/FPDF document
+     * @return bool true if the current page is a FPDI/FPDF document
      */
     public function isFpdf(): bool
     {
-        if (\array_key_exists('Producer', $this->document->getDetails())
-            && \is_string($this->document->getDetails()['Producer'])
-            && 0 === strncmp($this->document->getDetails()['Producer'], 'FPDF', 4)) {
-            return true;
-        }
+        $details = $this->document->getDetails();
 
-        return false;
+        return \array_key_exists('Producer', $details)
+            && \is_string($details['Producer'])
+            && str_starts_with($details['Producer'], 'FPDF');
     }
 
     /**
@@ -333,11 +321,13 @@ class Page extends PDFObject
     public function createPDFObjectForFpdf(): PDFObject
     {
         $pdfObject = $this->getPDFObjectForFpdf();
-        $new_content = $pdfObject->getContent();
-        $header = $pdfObject->getHeader();
-        $config = $pdfObject->config;
 
-        return new PDFObject($pdfObject->document, $header, $new_content, $config);
+        return new PDFObject(
+            $pdfObject->document,
+            $pdfObject->getHeader(),
+            $pdfObject->getContent(),
+            $pdfObject->config
+        );
     }
 
     /**
@@ -348,11 +338,13 @@ class Page extends PDFObject
     public function createPageForFpdf(): self
     {
         $pdfObject = $this->getPDFObjectForFpdf();
-        $new_content = $pdfObject->getContent();
-        $header = $pdfObject->getHeader();
-        $config = $pdfObject->config;
 
-        return new self($pdfObject->document, $header, $new_content, $config);
+        return new self(
+            $pdfObject->document,
+            $pdfObject->getHeader(),
+            $pdfObject->getContent(),
+            $pdfObject->config
+        );
     }
 
     /**
@@ -370,6 +362,7 @@ class Page extends PDFObject
         return isset($xObjects[$pageNum]) && $xObjects[$pageNum] instanceof PDFObject;
     }
 
+    #[\Override]
     public function getTextArray(?self $page = null): array
     {
         if ($this->hasFpdfTemplate()) {
@@ -377,59 +370,54 @@ class Page extends PDFObject
             $newPdfObject = $this->createPDFObjectForFpdf();
 
             return $newPdfObject->getTextArray($pdfObject instanceof self ? $pdfObject : $this);
-        } else {
-            if ($contents = $this->get('Contents')) {
-                if ($contents instanceof ElementMissing) {
-                    return [];
-                } elseif ($contents instanceof ElementNull) {
-                    return [];
-                } elseif ($contents instanceof PDFObject) {
-                    $elements = $contents->getHeader()->getElements();
+        }
 
-                    if (is_numeric(key($elements))) {
-                        $new_content = '';
-
-                        /** @var PDFObject $element */
-                        foreach ($elements as $element) {
-                            if ($element instanceof ElementXRef) {
-                                $obj = $element->getObject();
-                                if (null !== $obj) {
-                                    $new_content .= $obj->getContent();
-                                }
-                            } elseif (null !== $element) {
-                                $new_content .= $element->getContent();
-                            }
-                        }
-
-                        $header = new Header([], $this->document);
-                        $contents = new PDFObject($this->document, $header, $new_content, $this->config);
-                    } else {
-                        try {
-                            return $contents->getTextArray($this);
-                        } catch (\Throwable $e) {
-                            return $contents->getTextArray();
-                        }
-                    }
-                } elseif ($contents instanceof ElementArray) {
-                    // Create a virtual global content.
-                    $new_content = '';
-
-                    /** @var PDFObject $content */
-                    foreach ($contents->getContent() as $content) {
-                        if (null !== $content) {
-                            $new_content .= $content->getContent()."\n";
-                        }
-                    }
-
-                    $header = new Header([], $this->document);
-                    $contents = new PDFObject($this->document, $header, $new_content, $this->config);
-                }
-
-                return $contents->getTextArray($this);
-            }
-
+        $contents = $this->get('Contents');
+        if ($contents instanceof ElementMissing || $contents instanceof ElementNull) {
             return [];
         }
+
+        if ($contents instanceof PDFObject) {
+            $elements = $contents->getHeader()->getElements();
+
+            if (is_numeric(key($elements))) {
+                $new_content = '';
+
+                foreach ($elements as $element) {
+                    if ($element instanceof ElementXRef) {
+                        $obj = $element->getObject();
+                        if (null !== $obj) {
+                            $new_content .= $obj->getContent();
+                        }
+                    } elseif (null !== $element) {
+                        $new_content .= $element->getContent();
+                    }
+                }
+
+                $header = new Header([], $this->document);
+                $contents = new PDFObject($this->document, $header, $new_content, $this->config);
+            } else {
+                try {
+                    return $contents->getTextArray($this);
+                } catch (\Throwable) {
+                    return $contents->getTextArray();
+                }
+            }
+        } elseif ($contents instanceof ElementArray) {
+            // Create a virtual global content.
+            $new_content = '';
+
+            foreach ($contents->getContent() as $content) {
+                if (null !== $content) {
+                    $new_content .= $content->getContent()."\n";
+                }
+            }
+
+            $header = new Header([], $this->document);
+            $contents = new PDFObject($this->document, $header, $new_content, $this->config);
+        }
+
+        return $contents->getTextArray($this);
     }
 
     /**
@@ -445,7 +433,7 @@ class Page extends PDFObject
         $extractedData = [];
         $content = $this->get('Contents');
         $values = $content->getContent();
-        if (isset($values) && \is_array($values)) {
+        if (\is_array($values)) {
             $text = '';
             foreach ($values as $section) {
                 if (null !== $section) {
@@ -476,40 +464,34 @@ class Page extends PDFObject
     }
 
     /**
-     * Gets all the decoded text data with it internal representation from a page.
+     * Gets all the decoded text data with its internal representation from a page.
      *
-     * @param array $extractedRawData the extracted data return by extractRawData or
-     *                                null if extractRawData should be called
+     * @param array|null $extractedRawData the extracted data returned by extractRawData or
+     *                                     null if extractRawData should be called
      *
      * @return array An array with the data and the internal representation
      */
     public function extractDecodedRawData(?array $extractedRawData = null): array
     {
-        if (!isset($extractedRawData) || !$extractedRawData) {
+        if (null === $extractedRawData || [] === $extractedRawData) {
             $extractedRawData = $this->extractRawData();
         }
-        $currentFont = null; /** @var Font $currentFont */
+        $currentFont = null;
         $clippedFont = null;
-        $fpdfPage = null;
-        if ($this->hasFpdfTemplate()) {
-            $fpdfPage = $this->createPageForFpdf();
-        }
+        $fpdfPage = $this->hasFpdfTemplate() ? $this->createPageForFpdf() : null;
+
         foreach ($extractedRawData as &$command) {
-            if ('Tj' == $command['o'] || 'TJ' == $command['o']) {
+            if ('Tj' === $command['o'] || 'TJ' === $command['o']) {
                 $data = $command['c'];
                 if (!\is_array($data)) {
-                    $tmpText = '';
-                    if (isset($currentFont)) {
-                        $tmpText = $currentFont->decodeOctal($data);
-                        // $tmpText = $currentFont->decodeHexadecimal($tmpText, false);
-                    }
+                    $tmpText = null !== $currentFont ? $currentFont->decodeOctal($data) : '';
                     $tmpText = str_replace(
                         ['\\\\', '\(', '\)', '\n', '\r', '\t', '\ '],
                         ['\\', '(', ')', "\n", "\r", "\t", ' '],
                         $tmpText
                     );
-                    $tmpText = mb_convert_encoding($tmpText, 'UTF-8', 'ISO-8859-1');
-                    if (isset($currentFont)) {
+                    $tmpText = (string) mb_convert_encoding($tmpText, 'UTF-8', 'ISO-8859-1');
+                    if (null !== $currentFont) {
                         $tmpText = $currentFont->decodeContent($tmpText);
                     }
                     $command['c'] = $tmpText;
@@ -517,36 +499,35 @@ class Page extends PDFObject
                 }
                 $numText = \count($data);
                 for ($i = 0; $i < $numText; ++$i) {
-                    if (0 != ($i % 2)) {
+                    if (0 !== ($i % 2)) {
                         continue;
                     }
                     $tmpText = $data[$i]['c'];
-                    $decodedText = isset($currentFont) ? $currentFont->decodeOctal($tmpText) : $tmpText;
+                    $decodedText = null !== $currentFont ? $currentFont->decodeOctal($tmpText) : $tmpText;
                     $decodedText = str_replace(
                         ['\\\\', '\(', '\)', '\n', '\r', '\t', '\ '],
                         ['\\', '(', ')', "\n", "\r", "\t", ' '],
                         $decodedText
                     );
 
-                    $decodedText = mb_convert_encoding($decodedText, 'UTF-8', 'ISO-8859-1');
+                    $decodedText = (string) mb_convert_encoding($decodedText, 'UTF-8', 'ISO-8859-1');
 
-                    if (isset($currentFont)) {
+                    if (null !== $currentFont) {
                         $decodedText = $currentFont->decodeContent($decodedText);
                     }
                     $command['c'][$i]['c'] = $decodedText;
-                    continue;
                 }
-            } elseif ('Tf' == $command['o'] || 'TF' == $command['o']) {
+            } elseif ('Tf' === $command['o'] || 'TF' === $command['o']) {
                 $fontId = explode(' ', $command['c'])[0];
                 // If document is a FPDI/FPDF the $page has the correct font
-                $currentFont = isset($fpdfPage) ? $fpdfPage->getFont($fontId) : $this->getFont($fontId);
-                continue;
-            } elseif ('Q' == $command['o']) {
+                $currentFont = null !== $fpdfPage ? $fpdfPage->getFont($fontId) : $this->getFont($fontId);
+            } elseif ('Q' === $command['o']) {
                 $currentFont = $clippedFont;
-            } elseif ('q' == $command['o']) {
+            } elseif ('q' === $command['o']) {
                 $clippedFont = $currentFont;
             }
         }
+        unset($command);
 
         return $extractedRawData;
     }
@@ -555,163 +536,24 @@ class Page extends PDFObject
      * Gets just the Text commands that are involved in text positions and
      * Text Matrix (Tm)
      *
-     * It extract just the PDF commands that are involved with text positions, and
-     * the Text Matrix (Tm). These are: BT, ET, TL, Td, TD, Tm, T*, Tj, ', ", and TJ
+     * It extracts just the PDF commands that are involved with text positions, and
+     * the Text Matrix (Tm). These are: BT, cm, ET, TL, Td, TD, Tm, T*, Tj, ', ", Tf, TF, TJ, q, and Q.
      *
-     * @param array $extractedDecodedRawData The data extracted by extractDecodeRawData.
-     *                                       If it is null, the method extractDecodeRawData is called.
+     * @param array|null $extractedDecodedRawData The data extracted by extractDecodedRawData.
+     *                                            If it is null, the method extractDecodedRawData is called.
      *
-     * @return array An array with the text command of the page
+     * @return array An array with the text commands of the page
      */
     public function getDataCommands(?array $extractedDecodedRawData = null): array
     {
-        if (!isset($extractedDecodedRawData) || !$extractedDecodedRawData) {
+        if (null === $extractedDecodedRawData || [] === $extractedDecodedRawData) {
             $extractedDecodedRawData = $this->extractDecodedRawData();
         }
+
         $extractedData = [];
         foreach ($extractedDecodedRawData as $command) {
-            switch ($command['o']) {
-                /*
-                 * BT
-                 * Begin a text object, inicializind the Tm and Tlm to identity matrix
-                 */
-                case 'BT':
-                    $extractedData[] = $command;
-                    break;
-                    /*
-                     * cm
-                     * Concatenation Matrix that will transform all following Tm
-                     */
-                case 'cm':
-                    $extractedData[] = $command;
-                    break;
-                    /*
-                     * ET
-                     * End a text object, discarding the text matrix
-                     */
-                case 'ET':
-                    $extractedData[] = $command;
-                    break;
-
-                    /*
-                     * leading TL
-                     * Set the text leading, Tl, to leading. Tl is used by the T*, ' and " operators.
-                     * Initial value: 0
-                     */
-                case 'TL':
-                    $extractedData[] = $command;
-                    break;
-
-                    /*
-                     * tx ty Td
-                     * Move to the start of the next line, offset form the start of the
-                     * current line by tx, ty.
-                     */
-                case 'Td':
-                    $extractedData[] = $command;
-                    break;
-
-                    /*
-                     * tx ty TD
-                     * Move to the start of the next line, offset form the start of the
-                     * current line by tx, ty. As a side effect, this operator set the leading
-                     * parameter in the text state. This operator has the same effect as the
-                     * code:
-                     * -ty TL
-                     * tx ty Td
-                     */
-                case 'TD':
-                    $extractedData[] = $command;
-                    break;
-
-                    /*
-                     * a b c d e f Tm
-                     * Set the text matrix, Tm, and the text line matrix, Tlm. The operands are
-                     * all numbers, and the initial value for Tm and Tlm is the identity matrix
-                     * [1 0 0 1 0 0]
-                     */
-                case 'Tm':
-                    $extractedData[] = $command;
-                    break;
-
-                    /*
-                     * T*
-                     * Move to the start of the next line. This operator has the same effect
-                     * as the code:
-                     * 0 Tl Td
-                     * Where Tl is the current leading parameter in the text state.
-                     */
-                case 'T*':
-                    $extractedData[] = $command;
-                    break;
-
-                    /*
-                     * string Tj
-                     * Show a Text String
-                     */
-                case 'Tj':
-                    $extractedData[] = $command;
-                    break;
-
-                    /*
-                     * string '
-                     * Move to the next line and show a text string. This operator has the
-                     * same effect as the code:
-                     * T*
-                     * string Tj
-                     */
-                case "'":
-                    $extractedData[] = $command;
-                    break;
-
-                    /*
-                     * aw ac string "
-                     * Move to the next lkine and show a text string, using aw as the word
-                     * spacing and ac as the character spacing. This operator has the same
-                     * effect as the code:
-                     * aw Tw
-                     * ac Tc
-                     * string '
-                     * Tw set the word spacing, Tw, to wordSpace.
-                     * Tc Set the character spacing, Tc, to charsSpace.
-                     */
-                case '"':
-                    $extractedData[] = $command;
-                    break;
-
-                case 'Tf':
-                case 'TF':
-                    $extractedData[] = $command;
-                    break;
-
-                    /*
-                     * array TJ
-                     * Show one or more text strings allow individual glyph positioning.
-                     * Each lement of array con be a string or a number. If the element is
-                     * a string, this operator shows the string. If it is a number, the
-                     * operator adjust the text position by that amount; that is, it translates
-                     * the text matrix, Tm. This amount is substracted form the current
-                     * horizontal or vertical coordinate, depending on the writing mode.
-                     * in the default coordinate system, a positive adjustment has the effect
-                     * of moving the next glyph painted either to the left or down by the given
-                     * amount.
-                     */
-                case 'TJ':
-                    $extractedData[] = $command;
-                    break;
-                    /*
-                     * q
-                     * Save current graphics state to stack
-                     */
-                case 'q':
-                    /*
-                     * Q
-                     * Load last saved graphics state from stack
-                     */
-                case 'Q':
-                    $extractedData[] = $command;
-                    break;
-                default:
+            if (\in_array($command['o'], self::DATA_COMMANDS, true)) {
+                $extractedData[] = $command;
             }
         }
 
@@ -722,12 +564,12 @@ class Page extends PDFObject
      * Gets the Text Matrix of the text in the page
      *
      * Return an array where every item is an array where the first item is the
-     * Text Matrix (Tm) and the second is a string with the text data.  The Text matrix
+     * Text Matrix (Tm) and the second is a string with the text data. The Text matrix
      * is an array of 6 numbers. The last 2 numbers are the coordinates X and Y of the
-     * text. The first 4 numbers has to be with Scalation, Rotation and Skew of the text.
+     * text. The first 4 numbers have to do with Scaling, Rotation and Skew of the text.
      *
-     * @param array $dataCommands the data extracted by getDataCommands
-     *                            if null getDataCommands is called
+     * @param array|null $dataCommands the data extracted by getDataCommands
+     *                                 if null getDataCommands is called
      *
      * @return array an array with the data of the page including the Tm information
      *               of any text in the page
@@ -746,7 +588,7 @@ class Page extends PDFObject
             }
 
             $contents = $this->get('Contents');
-            if (!$contents || $contents instanceof ElementMissing || $contents instanceof ElementNull) {
+            if ($contents instanceof ElementMissing || $contents instanceof ElementNull) {
                 $this->dataTm = [];
 
                 return [];
@@ -791,7 +633,7 @@ class Page extends PDFObject
             return [];
         }
 
-        if (!$dataCommands) {
+        if ([] === $dataCommands) {
             $dataCommands = $this->getDataCommands();
         }
 
@@ -804,7 +646,7 @@ class Page extends PDFObject
         /*
          *  Set the text leading used by T*, ' and " operators
          */
-        $defaultTl = 0;
+        $defaultTl = 0.0;
 
         /*
          *  Set default values for font data
@@ -829,13 +671,14 @@ class Page extends PDFObject
          *
          * These will be assigned the value of the currently printed string
          */
-        $Tx = 0;
-        $Ty = 0;
+        $Tx = 0.0;
+        $Ty = 0.0;
 
         $Tm = $defaultTm;
         $Tl = $defaultTl;
         $fontId = $defaultFontId;
         $fontSize = $defaultFontSize; // reflects fontSize set by Tf or Tfs
+        $includeFontInfo = $this->config?->getDataTmFontInfoHasToBeIncluded() ?? false;
 
         $extractedTexts = $this->getTextArray();
         $extractedData = [];
@@ -855,12 +698,12 @@ class Page extends PDFObject
                 case 'BT':
                     $Tm = $defaultTm;
                     $Tl = $defaultTl;
-                    $Tx = 0;
-                    $Ty = 0;
+                    $Tx = 0.0;
+                    $Ty = 0.0;
                     break;
 
                 case 'cm':
-                    $newConcatTm = (array) explode(' ', $command['c']);
+                    $newConcatTm = explode(' ', $command['c']);
                     $TempMatrix = [];
                     // Multiply with previous concatTm
                     $TempMatrix[0] = (float) $concatTm[0] * (float) $newConcatTm[0] + (float) $concatTm[1] * (float) $newConcatTm[2];
@@ -871,28 +714,15 @@ class Page extends PDFObject
                     $TempMatrix[5] = (float) $concatTm[4] * (float) $newConcatTm[1] + (float) $concatTm[5] * (float) $newConcatTm[3] + (float) $newConcatTm[5];
                     $concatTm = $TempMatrix;
                     break;
-                    /*
-                     * ET
-                     * End a text object
-                     */
+
                 case 'ET':
                     break;
 
-                    /*
-                     * text leading TL
-                     * Set the text leading, Tl, to leading. Tl is used by the T*, ' and " operators.
-                     * Initial value: 0
-                     */
                 case 'TL':
                     // scaled text leading
                     $Tl = (float) $command['c'] * (float) $Tm[$vSc];
                     break;
 
-                    /*
-                     * tx ty Td
-                     * Move to the start of the next line, offset from the start of the
-                     * current line by tx, ty.
-                     */
                 case 'Td':
                     $coord = explode(' ', $command['c']);
                     $Tx += (float) $coord[0] * (float) $Tm[$hSc];
@@ -901,15 +731,6 @@ class Page extends PDFObject
                     $Tm[$y] = (string) $Ty;
                     break;
 
-                    /*
-                     * tx ty TD
-                     * Move to the start of the next line, offset form the start of the
-                     * current line by tx, ty. As a side effect, this operator set the leading
-                     * parameter in the text state. This operator has the same effect as the
-                     * code:
-                     * -ty TL
-                     * tx ty Td
-                     */
                 case 'TD':
                     $coord = explode(' ', $command['c']);
                     $Tl = -((float) $coord[1] * (float) $Tm[$vSc]);
@@ -919,12 +740,6 @@ class Page extends PDFObject
                     $Tm[$y] = (string) $Ty;
                     break;
 
-                    /*
-                     * a b c d e f Tm
-                     * Set the text matrix, Tm, and the text line matrix, Tlm. The operands are
-                     * all numbers, and the initial value for Tm and Tlm is the identity matrix
-                     * [1 0 0 1 0 0]
-                     */
                 case 'Tm':
                     $Tm = explode(' ', $command['c']);
                     $TempMatrix = [];
@@ -939,55 +754,27 @@ class Page extends PDFObject
                     $Ty = (float) $Tm[$y];
                     break;
 
-                    /*
-                     * T*
-                     * Move to the start of the next line. This operator has the same effect
-                     * as the code:
-                     * 0 Tl Td
-                     * Where Tl is the current leading parameter in the text state.
-                     */
                 case 'T*':
                     $Ty -= $Tl;
                     $Tm[$y] = (string) $Ty;
                     break;
 
-                    /*
-                     * string Tj
-                     * Show a Text String
-                     */
                 case 'Tj':
+                case 'TJ':
                     $data = [$Tm, $currentText];
-                    if (null !== $this->config && $this->config->getDataTmFontInfoHasToBeIncluded()) {
+                    if ($includeFontInfo) {
                         $data[] = $fontId;
                         $data[] = $fontSize;
                     }
                     $extractedData[] = $data;
                     break;
 
-                    /*
-                     * string '
-                     * Move to the next line and show a text string. This operator has the
-                     * same effect as the code:
-                     * T*
-                     * string Tj
-                     */
                 case "'":
                     $Ty -= $Tl;
                     $Tm[$y] = (string) $Ty;
                     $extractedData[] = [$Tm, $currentText];
                     break;
 
-                    /*
-                     * aw ac string "
-                     * Move to the next line and show a text string, using aw as the word
-                     * spacing and ac as the character spacing. This operator has the same
-                     * effect as the code:
-                     * aw Tw
-                     * ac Tc
-                     * string '
-                     * Tw set the word spacing, Tw, to wordSpace.
-                     * Tc Set the character spacing, Tc, to charsSpace.
-                     */
                 case '"':
                     $data = explode(' ', $currentText);
                     $Ty -= $Tl;
@@ -1006,45 +793,19 @@ class Page extends PDFObject
                      * Source: https://ia902503.us.archive.org/10/items/pdfy-0vt8s-egqFwDl7L2/PDF%20Reference%201.0.pdf
                      * Introduced with https://github.com/smalot/pdfparser/pull/516
                      */
-                    list($fontId, $fontSize) = explode(' ', $command['c'], 2);
+                    [$fontId, $fontSize] = explode(' ', $command['c'], 2);
                     break;
 
-                    /*
-                     * array TJ
-                     * Show one or more text strings allow individual glyph positioning.
-                     * Each lement of array con be a string or a number. If the element is
-                     * a string, this operator shows the string. If it is a number, the
-                     * operator adjust the text position by that amount; that is, it translates
-                     * the text matrix, Tm. This amount is substracted form the current
-                     * horizontal or vertical coordinate, depending on the writing mode.
-                     * in the default coordinate system, a positive adjustment has the effect
-                     * of moving the next glyph painted either to the left or down by the given
-                     * amount.
-                     */
-                case 'TJ':
-                    $data = [$Tm, $currentText];
-                    if (null !== $this->config && $this->config->getDataTmFontInfoHasToBeIncluded()) {
-                        $data[] = $fontId;
-                        $data[] = $fontSize;
-                    }
-                    $extractedData[] = $data;
-                    break;
-                    /*
-                     * q
-                     * Save current graphics state to stack
-                     */
                 case 'q':
                     $graphicsStatesStack[] = $concatTm;
                     break;
-                    /*
-                     * Q
-                     * Load last saved graphics state from stack
-                     */
+
                 case 'Q':
-                    if (!empty($graphicsStatesStack)) {
+                    if ([] !== $graphicsStatesStack) {
                         $concatTm = array_pop($graphicsStatesStack);
                     }
                     break;
+
                 default:
             }
         }
@@ -1056,41 +817,29 @@ class Page extends PDFObject
     /**
      * Gets text data that are around the given coordinates (X,Y)
      *
-     * If the text is in near the given coordinates (X,Y) (or the TM info),
-     * the text is returned.  The extractedData return by getDataTm, could be use to see
-     * where is the coordinates of a given text, using the TM info for it.
+     * If the text is near the given coordinates (X,Y) (or the TM info),
+     * the text is returned. The extractedData returned by getDataTm can be used to see
+     * the coordinates of a given text, using the TM info for it.
      *
-     * @param float $x      The X value of the coordinate to search for. if null
-     *                      just the Y value is considered (same Row)
-     * @param float $y      The Y value of the coordinate to search for
-     *                      just the X value is considered (same column)
-     * @param float $xError The value less or more to consider an X to be "near"
-     * @param float $yError The value less or more to consider an Y to be "near"
+     * @param float|null $x      The X value of the coordinate to search for. If null
+     *                           just the Y value is considered (same Row)
+     * @param float|null $y      The Y value of the coordinate to search for. If null
+     *                           just the X value is considered (same column)
+     * @param float      $xError The value less or more to consider an X to be "near"
+     * @param float      $yError The value less or more to consider a Y to be "near"
      *
      * @return array An array of text that are near the given coordinates. If no text
-     *               "near" the x,y coordinate, an empty array is returned. If Both, x
-     *               and y coordinates are null, null is returned.
+     *               is "near" the x,y coordinate, or both x and y are null, an empty array is returned.
      */
     public function getTextXY(?float $x = null, ?float $y = null, float $xError = 0, float $yError = 0): array
     {
-        if (!isset($this->dataTm) || !$this->dataTm) {
+        if (null === $this->dataTm || [] === $this->dataTm) {
             $this->getDataTm();
-        }
-
-        if (null !== $x) {
-            $x = (float) $x;
-        }
-
-        if (null !== $y) {
-            $y = (float) $y;
         }
 
         if (null === $x && null === $y) {
             return [];
         }
-
-        $xError = (float) $xError;
-        $yError = (float) $yError;
 
         $extractedData = [];
         foreach ($this->dataTm as $item) {
@@ -1099,25 +848,22 @@ class Page extends PDFObject
             $yTm = (float) $tm[5];
             $text = $item[1];
             if (null === $y) {
-                if (($xTm >= ($x - $xError))
-                    && ($xTm <= ($x + $xError))) {
+                if (($xTm >= ($x - $xError)) && ($xTm <= ($x + $xError))) {
                     $extractedData[] = [$tm, $text];
-                    continue;
                 }
+                continue;
             }
             if (null === $x) {
-                if (($yTm >= ($y - $yError))
-                    && ($yTm <= ($y + $yError))) {
+                if (($yTm >= ($y - $yError)) && ($yTm <= ($y + $yError))) {
                     $extractedData[] = [$tm, $text];
-                    continue;
                 }
+                continue;
             }
             if (($xTm >= ($x - $xError))
                 && ($xTm <= ($x + $xError))
                 && ($yTm >= ($y - $yError))
                 && ($yTm <= ($y + $yError))) {
                 $extractedData[] = [$tm, $text];
-                continue;
             }
         }
 

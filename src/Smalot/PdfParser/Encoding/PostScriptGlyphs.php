@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file This file is part of the PdfParser library.
  *
@@ -40,10 +42,10 @@ class PostScriptGlyphs
      * The mapping tables have been converted from https://github.com/OpenPrinting/cups-filters/blob/master/fontembed/aglfn13.c,
      * part of the OpenPrinting/cups-filters package, which itself is licensed under the MIT license and lists this specific code part as:
      * Copyright 2008,2012 Tobias Hoffmann under the Expat license (https://www.gnu.org/licenses/license-list.html#Expat)
+     *
+     * @var array<string, string>
      */
-    public static function getGlyphs(): array
-    {
-        return [
+    private const array GLYPHS = [
             'space' => '0x00a0',
             'exclam' => '0x0021',
             'quotedbl' => '0x0022',
@@ -1083,17 +1085,21 @@ class PostScriptGlyphs
             'afii57695' => '0xfb2b',
             'afii57723' => '0xfb35',
             'afii57700' => '0xfb4b',
-        ];
-    }
+    ];
 
     /**
      * Cached integer code-point lookup table (avoids repeated hexdec() per character).
      *
      * @var array<string, int>|null
      */
-    private static $codePointMap;
+    private static ?array $codePointMap = null;
 
-    public static function getCodePoint($glyph): ?int
+    public static function getGlyphs(): array
+    {
+        return self::GLYPHS;
+    }
+
+    public static function getCodePoint(int|string $glyph): ?int
     {
         if (null === self::$codePointMap) {
             self::$codePointMap = [];
@@ -1108,10 +1114,10 @@ class PostScriptGlyphs
 
         // Adobe Glyph List fallback for uniXXXX / uXXXXX glyph names
         if (\is_string($glyph)) {
-            if (0 === strncmp($glyph, 'uni', 3) && 7 === \strlen($glyph) && ctype_xdigit(substr($glyph, 3))) {
+            if (str_starts_with($glyph, 'uni') && 7 === \strlen($glyph) && ctype_xdigit(substr($glyph, 3))) {
                 return (int) hexdec(substr($glyph, 3));
             }
-            if ('u' === ($glyph[0] ?? '') && \strlen($glyph) >= 5 && \strlen($glyph) <= 7 && ctype_xdigit(substr($glyph, 1))) {
+            if (str_starts_with($glyph, 'u') && \strlen($glyph) >= 5 && \strlen($glyph) <= 7 && ctype_xdigit(substr($glyph, 1))) {
                 $cp = (int) hexdec(substr($glyph, 1));
                 if ($cp <= 0x10FFFF) {
                     return $cp;

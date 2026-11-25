@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -42,22 +44,14 @@ use Smalot\PdfParser\Exception\EncodingNotFoundException;
  */
 class Encoding extends PDFObject
 {
-    /**
-     * @var array
-     */
-    protected $encoding;
+    protected array $encoding = [];
 
-    /**
-     * @var array
-     */
-    protected $differences;
+    protected array $differences = [];
 
-    /**
-     * @var array
-     */
-    protected $mapping;
+    protected array $mapping = [];
 
-    public function init()
+    #[\Override]
+    public function init(): void
     {
         $this->mapping = [];
         $this->differences = [];
@@ -78,42 +72,38 @@ class Encoding extends PDFObject
             }
 
             foreach ($differences as $difference) {
-                /** @var ElementNumeric $difference */
                 if ($difference instanceof ElementNumeric) {
                     $code = (int) $difference->getContent();
                     continue;
                 }
 
                 // ElementName
-                $this->differences[$code] = $difference;
-                if (\is_object($difference)) {
-                    $this->differences[$code] = $difference->getContent();
-                }
+                $this->differences[$code] = \is_object($difference) ? $difference->getContent() : $difference;
 
                 // For the next char.
                 ++$code;
             }
 
             foreach ($this->differences as $code => $difference) {
-                /* @var string $difference */
                 $this->mapping[$code] = $difference;
             }
         }
     }
 
+    #[\Override]
     public function getDetails(bool $deep = true): array
     {
         $details = [];
 
-        $details['BaseEncoding'] = ($this->has('BaseEncoding') ? (string) $this->get('BaseEncoding') : 'Ansi');
-        $details['Differences'] = ($this->has('Differences') ? (string) $this->get('Differences') : '');
+        $details['BaseEncoding'] = $this->has('BaseEncoding') ? (string) $this->get('BaseEncoding') : 'Ansi';
+        $details['Differences'] = $this->has('Differences') ? (string) $this->get('Differences') : '';
 
         $details += parent::getDetails($deep);
 
         return $details;
     }
 
-    public function translateChar($dec): ?int
+    public function translateChar(int|string $dec): ?int
     {
         if (isset($this->mapping[$dec])) {
             $dec = $this->mapping[$dec];
@@ -123,21 +113,13 @@ class Encoding extends PDFObject
     }
 
     /**
-     * Returns encoding class name if available or empty string (only prior PHP 7.4).
+     * Returns encoding class name if available.
      *
-     * @throws \Exception On PHP 7.4+ an exception is thrown if encoding class doesn't exist.
+     * @throws EncodingNotFoundException If encoding class doesn't exist.
      */
     public function __toString(): string
     {
-        try {
-            return $this->getEncodingClass();
-        } catch (\Exception $e) {
-            // prior to PHP 7.4 toString has to return an empty string.
-            if (version_compare(\PHP_VERSION, '7.4.0', '<')) {
-                return '';
-            }
-            throw $e;
-        }
+        return $this->getEncodingClass();
     }
 
     /**
@@ -146,10 +128,10 @@ class Encoding extends PDFObject
     protected function getEncodingClass(): string
     {
         // Load reference table charset.
-        $baseEncoding = preg_replace('/[^A-Z0-9]/is', '', $this->get('BaseEncoding')->getContent());
+        $baseEncoding = preg_replace('/[^A-Z0-9]/is', '', (string) $this->get('BaseEncoding')->getContent());
 
         // Check for empty BaseEncoding field value
-        if (!\is_string($baseEncoding) || 0 == \strlen($baseEncoding)) {
+        if (!\is_string($baseEncoding) || '' === $baseEncoding) {
             $baseEncoding = 'StandardEncoding';
         }
 

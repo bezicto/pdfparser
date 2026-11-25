@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -44,21 +46,25 @@ class ElementMissing extends Element
         parent::__construct(null, null);
     }
 
-    public function equals($value): bool
+    #[\Override]
+    public function equals(mixed $value): bool
     {
         return false;
     }
 
-    public function contains($value): bool
+    #[\Override]
+    public function contains(mixed $value): bool
     {
         return false;
     }
 
-    public function getContent(): bool
+    #[\Override]
+    public function getContent(): false
     {
         return false;
     }
 
+    #[\Override]
     public function __toString(): string
     {
         return '';

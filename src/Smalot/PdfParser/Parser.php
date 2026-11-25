@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -50,21 +52,18 @@ use Smalot\PdfParser\XObject\Image;
  */
 class Parser
 {
-    /**
-     * @var Config
-     */
-    private $config;
+    private readonly Config $config;
 
     /**
      * @var PDFObject[]
      */
-    protected $objects = [];
+    protected array $objects = [];
 
-    protected $rawDataParser;
+    protected RawDataParser $rawDataParser;
 
-    public function __construct($cfg = [], ?Config $config = null)
+    public function __construct(array $cfg = [], ?Config $config = null)
     {
-        $this->config = $config ?: new Config();
+        $this->config = $config ?? new Config();
         $this->rawDataParser = new RawDataParser($cfg, $this->config);
     }
 
@@ -101,14 +100,14 @@ class Parser
     public function parseContent(string $content): Document
     {
         // Normalize the raw data and decode the cross-reference/trailer table.
-        list($xref, $pdfData) = $this->rawDataParser->parseHeaderAndXref($content);
+        [$xref, $pdfData] = $this->rawDataParser->parseHeaderAndXref($content);
 
         // $pdfData is a copy of $content, if $content had to be normalized (bytes
         // in front of the header, line endings). $content is released to avoid
         // holding both while the objects are parsed.
         unset($content);
 
-        if (isset($xref['trailer']['encrypt']) && false === $this->config->getIgnoreEncryption()) {
+        if (isset($xref['trailer']['encrypt']) && !$this->config->getIgnoreEncryption()) {
             throw new \Exception('Secured pdf file are currently not supported.');
         }
 
@@ -123,7 +122,7 @@ class Parser
             $this->parseObject($id, $structure, $document);
         }
 
-        if (empty($this->objects)) {
+        if ([] === $this->objects) {
             throw new \Exception('Object list not found. Possible secured file.');
         }
 
@@ -133,19 +132,19 @@ class Parser
         return $document;
     }
 
-    protected function parseTrailer(array $structure, ?Document $document)
+    protected function parseTrailer(array $structure, ?Document $document): Header
     {
         $trailer = [];
 
         foreach ($structure as $name => $values) {
-            $name = ucfirst($name);
+            $name = ucfirst((string) $name);
 
             if (is_numeric($values)) {
-                $trailer[$name] = new ElementNumeric($values);
+                $trailer[$name] = new ElementNumeric((string) $values);
             } elseif (\is_array($values)) {
                 $value = $this->parseTrailer($values, null);
-                $trailer[$name] = new ElementArray($value, null);
-            } elseif (false !== strpos($values, '_')) {
+                $trailer[$name] = new ElementArray($value->getElements(), null);
+            } elseif (\is_string($values) && str_contains($values, '_')) {
                 $trailer[$name] = new ElementXRef($values, $document);
             } else {
                 $trailer[$name] = $this->parseHeaderElement('(', $values, $document);
@@ -155,13 +154,13 @@ class Parser
         return new Header($trailer, $document);
     }
 
-    protected function parseObject(string $id, array $structure, ?Document $document)
+    protected function parseObject(string $id, array $structure, ?Document $document): void
     {
         $header = new Header([], $document);
         $content = '';
         $lazyStream = null;
 
-        foreach ($structure as $position => $part) {
+        foreach ($structure as $part) {
             if (\is_int($part)) {
                 $part = [null, null];
             }
@@ -183,7 +182,7 @@ class Parser
                     break;
 
                 case 'stream':
-                    $payload = isset($part[3][0]) ? $part[3][0] : $part[1];
+                    $payload = $part[3][0] ?? $part[1];
                     if ($payload instanceof LazyStream) {
                         if ($header->get('Type')->equals('ObjStm')) {
                             $content = $payload->decode();
@@ -196,7 +195,7 @@ class Parser
                     }
 
                     if ($header->get('Type')->equals('ObjStm')) {
-                        list($objectNumbers, $byteOffsets, $firstObjectOffset) = $this->getObjectStreamIndex($header, $content);
+                        [$objectNumbers, $byteOffsets, $firstObjectOffset] = $this->getObjectStreamIndex($header, $content);
                         $content = substr($content, $firstObjectOffset);
                         $table = [];
 
@@ -219,7 +218,7 @@ class Parser
                                 // A newer incremental revision already defined this object
                                 continue;
                             }
-                            $next_position = isset($positions[$index + 1]) ? $positions[$index + 1] : $contentLen;
+                            $next_position = $positions[$index + 1] ?? $contentLen;
                             $sub_header = $position < $contentLen
                                 ? $this->parseObjectStreamEntry($content, (int) $position, (int) $next_position, $document)
                                 : new Header([], $document);
@@ -235,10 +234,10 @@ class Parser
                     break;
 
                 default:
-                    if ('null' != $part) {
+                    if ('null' !== $part) {
                         $element = $this->parseHeaderElement($part[0], $part[1], $document);
 
-                        if ($element) {
+                        if (null !== $element) {
                             $header = new Header([$element], $document);
                         }
                     }
@@ -248,7 +247,7 @@ class Parser
 
         if (!isset($this->objects[$id])) {
             $object = PDFObject::factory($document, $header, $content, $this->config);
-            if (null !== $lazyStream && !($object instanceof Image && false === $this->config->getRetainImageContent())) {
+            if (null !== $lazyStream && !($object instanceof Image && !$this->config->getRetainImageContent())) {
                 $object->setLazyStream($lazyStream);
             }
             $this->objects[$id] = $object;
@@ -374,71 +373,40 @@ class Parser
     }
 
     /**
-     * @param string|array $value
-     *
-     * @return Element|Header|null
-     *
      * @throws \Exception
      */
-    protected function parseHeaderElement(?string $type, $value, ?Document $document)
+    protected function parseHeaderElement(?string $type, mixed $value, ?Document $document): Element|Header|null
     {
         $valueIsEmpty = null == $value || '' == $value || false == $value;
         if (('<<' === $type || '>>' === $type) && $valueIsEmpty) {
             $value = [];
         }
 
-        switch ($type) {
-            case '<<':
-            case '>>':
-                return $this->parseHeader($value, $document);
+        return match ($type) {
+            '<<', '>>' => $this->parseHeader($value, $document),
+            'numeric' => new ElementNumeric((string) $value),
+            'boolean' => new ElementBoolean($value),
+            'null' => new ElementNull(),
+            '(' => ElementDate::parse('('.$value.')', $document) ?: ElementString::parse('('.$value.')', $document),
+            '<' => $this->parseHeaderElement('(', ElementHexa::decode((string) $value), $document),
+            '/' => ElementName::parse('/'.$value, $document) ?: null,
+            'ojbref', 'objref' => new ElementXRef($value, $document),
+            '[' => $this->parseArrayElements($value, $document),
+            'endstream', 'obj', '', null => null,
+            default => throw new \Exception('Invalid type: "'.$type.'".'),
+        };
+    }
 
-            case 'numeric':
-                return new ElementNumeric($value);
+    private function parseArrayElements(mixed $value, ?Document $document): ElementArray
+    {
+        $values = [];
 
-            case 'boolean':
-                return new ElementBoolean($value);
-
-            case 'null':
-                return new ElementNull();
-
-            case '(':
-                if ($date = ElementDate::parse('('.$value.')', $document)) {
-                    return $date;
-                }
-
-                return ElementString::parse('('.$value.')', $document);
-
-            case '<':
-                return $this->parseHeaderElement('(', ElementHexa::decode($value), $document);
-
-            case '/':
-                return ElementName::parse('/'.$value, $document);
-
-            case 'ojbref': // old mistake in tcpdf parser
-            case 'objref':
-                return new ElementXRef($value, $document);
-
-            case '[':
-                $values = [];
-
-                if (\is_array($value)) {
-                    foreach ($value as $sub_element) {
-                        $sub_type = $sub_element[0];
-                        $sub_value = $sub_element[1];
-                        $values[] = $this->parseHeaderElement($sub_type, $sub_value, $document);
-                    }
-                }
-
-                return new ElementArray($values, $document);
-
-            case 'endstream':
-            case 'obj': // I don't know what it means but got my project fixed.
-            case '':
-                // Nothing to do with.
-                return null;
-
-            default:
-                throw new \Exception('Invalid type: "'.$type.'".');
+        if (\is_array($value)) {
+            foreach ($value as $sub_element) {
+                $values[] = $this->parseHeaderElement($sub_element[0], $sub_element[1], $document);
+            }
         }
+
+        return new ElementArray($values, $document);
     }
 }

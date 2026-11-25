@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file This file is part of the PdfParser library.
  *
@@ -42,10 +44,8 @@
 /**
  * Loads all files found in a given folder.
  * Calls itself recursively for all sub folders.
- *
- * @param string $dir
  */
-function requireFilesOfFolder($dir)
+function requireFilesOfFolder(string $dir): void
 {
     foreach (new DirectoryIterator($dir) as $fileInfo) {
         if (!$fileInfo->isDot()) {

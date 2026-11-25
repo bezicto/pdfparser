@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -46,19 +48,18 @@ class ElementName extends Element
         parent::__construct($value, null);
     }
 
-    public function equals($value): bool
+    #[\Override]
+    public function equals(mixed $value): bool
     {
         return $value == $this->value;
     }
 
-    /**
-     * @return bool|ElementName
-     */
-    public static function parse(string $content, ?Document $document = null, int &$offset = 0)
+    #[\Override]
+    public static function parse(string $content, ?Document $document = null, int &$offset = 0, bool $only_values = false): self|false
     {
-        if (preg_match('/^\s*\/([A-Z0-9\-\+,#\.]+)/is', $content, $match)) {
+        if (1 === preg_match('/^\s*\/([A-Z0-9\-\+,#\.]+)/is', $content, $match)) {
             $name = $match[1];
-            $offset += strpos($content, $name) + \strlen($name);
+            $offset += (int) strpos($content, $name) + \strlen($name);
             $name = Font::decodeEntities($name);
 
             return new self($name);

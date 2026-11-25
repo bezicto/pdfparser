@@ -23,7 +23,7 @@
     },
     "homepage": "https://github.com/bezicto/pdfparser",
     "require": {
-        "php": ">=7.1",
+        "php": ">=8.5",
         "symfony/polyfill-mbstring": "^1.18",
         "ext-zlib": "*",
         "ext-iconv": "*"

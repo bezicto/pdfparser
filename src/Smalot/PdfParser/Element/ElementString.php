@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -41,22 +43,21 @@ use Smalot\PdfParser\Font;
  */
 class ElementString extends Element
 {
-    public function __construct($value)
+    public function __construct(mixed $value)
     {
         parent::__construct($value, null);
     }
 
-    public function equals($value): bool
+    #[\Override]
+    public function equals(mixed $value): bool
     {
         return $value == $this->value;
     }
 
-    /**
-     * @return bool|ElementString
-     */
-    public static function parse(string $content, ?Document $document = null, int &$offset = 0)
+    #[\Override]
+    public static function parse(string $content, ?Document $document = null, int &$offset = 0, bool $only_values = false): self|false
     {
-        if (preg_match('/^\s*\((?P<name>.*)/s', $content, $match)) {
+        if (1 === preg_match('/^\s*\((?P<name>.*)/s', $content, $match)) {
             $name = $match['name'];
 
             // Find next ')' not escaped.
@@ -64,7 +65,7 @@ class ElementString extends Element
             while (false !== ($cur_start_pos = strpos($name, ')', $start_search_end))) {
                 $cur_extract = substr($name, $cur_start_text, $cur_start_pos - $cur_start_text);
                 preg_match('/(?P<escape>[\\\]*)$/s', $cur_extract, $match);
-                if (!(\strlen($match['escape']) % 2)) {
+                if (0 === (\strlen($match['escape']) % 2)) {
                     break;
                 }
                 $start_search_end = $cur_start_pos + 1;
@@ -72,10 +73,10 @@ class ElementString extends Element
 
             // Extract string.
             $name = substr($name, 0, (int) $cur_start_pos);
-            $offset += strpos($content, '(') + $cur_start_pos + 2; // 2 for '(' and ')'
+            $offset += (int) strpos($content, '(') + (int) $cur_start_pos + 2; // 2 for '(' and ')'
             $name = str_replace(
                 ['\\\\', '\\ ', '\\/', '\(', '\)', '\n', '\r', '\t'],
-                ['\\',   ' ',   '/',   '(',  ')',  "\n", "\r", "\t"],
+                ['\\', ' ', '/', '(', ')', "\n", "\r", "\t"],
                 $name
             );
 

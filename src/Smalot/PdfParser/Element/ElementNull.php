@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 /**
  * @file
  *          This file is part of the PdfParser library.
@@ -45,23 +47,29 @@ class ElementNull extends Element
         parent::__construct(null, null);
     }
 
+    #[\Override]
+    public function getContent(): null
+    {
+        return null;
+    }
+
+    #[\Override]
     public function __toString(): string
     {
         return 'null';
     }
 
-    public function equals($value): bool
+    #[\Override]
+    public function equals(mixed $value): bool
     {
-        return $this->getContent() === $value;
+        return null === $value;
     }
 
-    /**
-     * @return bool|ElementNull
-     */
-    public static function parse(string $content, ?Document $document = null, int &$offset = 0)
+    #[\Override]
+    public static function parse(string $content, ?Document $document = null, int &$offset = 0, bool $only_values = false): self|false
     {
-        if (preg_match('/^\s*(null)/s', $content, $match)) {
-            $offset += strpos($content, 'null') + \strlen('null');
+        if (1 === preg_match('/^\s*(null)/s', $content)) {
+            $offset += (int) strpos($content, 'null') + \strlen('null');
 
             return new self();
         }

@@ -48,8 +48,9 @@ class RawDataParserHelper extends RawDataParser
      *
      * @var array<string>
      */
-    public $decodedObjects = [];
+    public array $decodedObjects = [];
 
+    #[\Override]
     protected function getIndirectObject(string $pdfData, array $xref, string $objRef, int $offset = 0, bool $decoding = true): array
     {
         $this->decodedObjects[] = $objRef;
@@ -60,7 +61,7 @@ class RawDataParserHelper extends RawDataParser
     /**
      * Expose protected function "getRawObject".
      */
-    public function exposeGetRawObject($pdfData, $offset = 0)
+    public function exposeGetRawObject(string $pdfData, int $offset = 0): array
     {
         return $this->getRawObject($pdfData, $offset);
     }
@@ -374,7 +375,7 @@ class RawDataParserTest extends TestCase
     {
         $pdf = $this->createPdf($this->getObjects());
 
-        list($xref, $pdfData) = $this->fixture->parseHeaderAndXref($pdf);
+        [$xref, $pdfData] = $this->fixture->parseHeaderAndXref($pdf);
 
         $this->assertSame($pdf, $pdfData);
         $this->assertSame(
@@ -402,7 +403,7 @@ class RawDataParserTest extends TestCase
     {
         $pdf = $this->createPdf($this->getObjects());
 
-        list($xref, $pdfData) = $this->fixture->parseHeaderAndXref("data in front of header\n".$pdf);
+        [$xref, $pdfData] = $this->fixture->parseHeaderAndXref("data in front of header\n".$pdf);
 
         $this->assertSame($pdf, $pdfData);
         $this->assertSame(strpos($pdf, '4 0 obj'), $xref['xref']['4_0']);
@@ -420,7 +421,7 @@ class RawDataParserTest extends TestCase
     {
         $pdf = $this->createPdf($this->getObjects());
 
-        list($xref, $pdfData) = $this->fixture->parseHeaderAndXref(str_replace("\n", "\r\n", $pdf));
+        [$xref, $pdfData] = $this->fixture->parseHeaderAndXref(str_replace("\n", "\r\n", $pdf));
 
         $this->assertSame($pdf, $pdfData);
         $this->assertSame(strpos($pdf, '4 0 obj'), $xref['xref']['4_0']);
@@ -428,7 +429,7 @@ class RawDataParserTest extends TestCase
         // A file whose byte offsets fit to its \r\n end-of-line markers is left as it is
         $pdf = $this->createPdf($this->getObjects(), '', "\r\n");
 
-        list($xref, $pdfData) = $this->fixture->parseHeaderAndXref($pdf);
+        [$xref, $pdfData] = $this->fixture->parseHeaderAndXref($pdf);
 
         $this->assertSame($pdf, $pdfData);
         $this->assertSame(strpos($pdf, '4 0 obj'), $xref['xref']['4_0']);
@@ -443,7 +444,7 @@ class RawDataParserTest extends TestCase
      */
     public function testParseHeaderAndXrefEncryptEntry(): void
     {
-        list($xref) = $this->fixture->parseHeaderAndXref($this->createPdf($this->getObjects(), '/Encrypt 4 0 R '));
+        [$xref] = $this->fixture->parseHeaderAndXref($this->createPdf($this->getObjects(), '/Encrypt 4 0 R '));
 
         $this->assertSame('4_0', $xref['trailer']['encrypt']);
         $this->assertSame([], $this->fixture->decodedObjects);
@@ -454,7 +455,7 @@ class RawDataParserTest extends TestCase
      */
     public function testIterateIndirectObjectsDecodesOnDemand(): void
     {
-        list($xref, $pdfData) = $this->fixture->parseHeaderAndXref($this->createPdf($this->getObjects()));
+        [$xref, $pdfData] = $this->fixture->parseHeaderAndXref($this->createPdf($this->getObjects()));
 
         $objects = $this->fixture->iterateIndirectObjects($pdfData, $xref);
 
@@ -475,7 +476,7 @@ class RawDataParserTest extends TestCase
     public function testIterateIndirectObjects(): void
     {
         $pdf = $this->createPdf($this->getObjects());
-        list($xref, $pdfData) = $this->fixture->parseHeaderAndXref($pdf);
+        [$xref, $pdfData] = $this->fixture->parseHeaderAndXref($pdf);
 
         $objects = iterator_to_array($this->fixture->iterateIndirectObjects($pdfData, $xref));
 
@@ -510,11 +511,9 @@ class RawDataParserTest extends TestCase
     public function testIterateIndirectObjectsLeavesOutCompressedObjects(): void
     {
         $pdf = file_get_contents($this->rootDir.'/samples/bugs/Issue18.pdf');
-        list($xref, $pdfData) = $this->fixture->parseHeaderAndXref($pdf);
+        [$xref, $pdfData] = $this->fixture->parseHeaderAndXref($pdf);
 
-        $objectsWithOffset = array_filter($xref['xref'], function ($offset) {
-            return $offset > 0;
-        });
+        $objectsWithOffset = array_filter($xref['xref'], static fn (int $offset): bool => $offset > 0);
 
         // Make sure the file contains compressed objects
         $this->assertContains(-1, $xref['xref']);
@@ -530,13 +529,13 @@ class RawDataParserTest extends TestCase
      */
     public function testIterateIndirectObjectsWithoutObjects(): void
     {
-        list($xref, $pdfData) = $this->fixture->parseHeaderAndXref($this->createPdf([]));
+        [$xref, $pdfData] = $this->fixture->parseHeaderAndXref($this->createPdf([]));
 
         $this->assertArrayNotHasKey('xref', $xref);
 
         // PHPUnit reports warnings and notices, but the test passes nevertheless.
         // Turn them into exceptions to let the test fail.
-        set_error_handler(function (int $severity, string $message) {
+        set_error_handler(static function (int $severity, string $message): never {
             throw new \ErrorException($message, 0, $severity);
         });
 
@@ -555,7 +554,7 @@ class RawDataParserTest extends TestCase
     public function testParseData(): void
     {
         $pdf = $this->createPdf($this->getObjects());
-        list($xref, $pdfData) = $this->fixture->parseHeaderAndXref($pdf);
+        [$xref, $pdfData] = $this->fixture->parseHeaderAndXref($pdf);
 
         $result = $this->fixture->parseData($pdf);
 

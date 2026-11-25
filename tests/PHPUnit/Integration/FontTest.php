@@ -39,6 +39,7 @@ use PHPUnitTests\TestCase;
 use Smalot\PdfParser\Config;
 use Smalot\PdfParser\Document;
 use Smalot\PdfParser\Element;
+use Smalot\PdfParser\Element\ElementMissing;
 use Smalot\PdfParser\Encoding;
 use Smalot\PdfParser\Font;
 use Smalot\PdfParser\Header;
@@ -660,6 +661,7 @@ al;font-family:Helvetica,sans-serif;font-stretch:normal"><p><span style="font-fa
         $document = $this->createMock(Document::class);
 
         $header = $this->createMock(Header::class);
+        $header->method('get')->willReturn(new ElementMissing());
         $header->method('getDetails')->willReturn([
             'FirstChar' => '',
             'LastChar' => '',

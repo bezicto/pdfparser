@@ -85,31 +85,18 @@ class EncodingTest extends TestCase
     }
 
     /**
-     * This tests focuses on behavior of Encoding::__toString when running PHP 7.4+ and prior.
-     *
-     * Prior PHP 7.4 we expect an empty string to be returned (based on PHP specification).
-     * PHP 7.4+ we expect an exception to be thrown when class is invalid.
+     * Verifies Encoding::__toString throws EncodingNotFoundException when class is invalid.
      */
     public function testToStringGetEncodingClassMissingClassException(): void
     {
-        // prior to PHP 7.4 toString has to return an empty string.
-        if (version_compare(\PHP_VERSION, '7.4.0', '<')) {
-            $header = new Header(['BaseEncoding' => new Element('invalid')]);
+        $this->expectException(EncodingNotFoundException::class);
+        $this->expectExceptionMessage('Missing encoding data for: "invalid"');
 
-            $encoding = new Encoding(new Document(), $header);
+        $header = new Header(['BaseEncoding' => new Element('invalid')]);
 
-            $this->assertEquals('', $encoding->__toString());
-        } else {
-            // PHP 7.4+
-            $this->expectException(\Exception::class);
-            $this->expectExceptionMessage('Missing encoding data for: "invalid"');
+        $encoding = new Encoding(new Document(), $header);
 
-            $header = new Header(['BaseEncoding' => new Element('invalid')]);
-
-            $encoding = new Encoding(new Document(), $header);
-
-            $encoding->__toString();
-        }
+        $encoding->__toString();
     }
 
     /**
