@@ -730,4 +730,69 @@ al;font-family:Helvetica,sans-serif;font-stretch:normal"><p><span style="font-fa
 
         $this->assertSame('Hello', trim($document->getText()));
     }
+
+    /**
+     * Wide beginbfrange mappings (> 256 codes, e.g. <0000> <FFFF>) must be evaluated
+     * lazily on demand rather than pre-allocating tens of thousands of array entries.
+     */
+    public function testLoadTranslateTableLazyWideBfrangePreventsMemoryExhaustion(): void
+    {
+        $document = new Document();
+
+        $header = Header::parse(
+            '<</Type/Font /Subtype /Type0 /ToUnicode 2 0 R /FirstChar 65 /LastChar 67 /Widths [600 650 700]>>',
+            $document
+        );
+        $font = new Font($document, $header);
+
+        $content = '/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo
+<< /Registry (Adobe)
+/Ordering (UCS)
+/Supplement 0
+>> def
+/CMapName /Adobe-Identity-UCS def
+/CMapType 2 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+2 beginbfrange
+<0000> <DFFF> <0000>
+<E000> <E200> <00310030>
+endbfrange
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end';
+        $unicode = new PDFObject($document, null, $content);
+        $document->setObjects(['1_0' => $font, '2_0' => $unicode]);
+
+        $memBefore = memory_get_usage();
+        $font->init();
+        $table = $font->loadTranslateTable();
+        $memDelta = memory_get_usage() - $memBefore;
+
+        // Wide ranges (> 256) are stored lazily in $rangeOffsets, not eagerly expanded
+        $this->assertCount(0, $table);
+        $this->assertLessThan(1024 * 1024, $memDelta);
+
+        // calculateTextWidth resolves glyph indices from lazy ranges even before translateChar()
+        $missing = [];
+        $this->assertEquals(1950, $font->calculateTextWidth('ABC', $missing));
+        $this->assertSame([], $missing);
+
+        // On-demand translation for ASCII, Greek, and math symbols
+        $this->assertSame('A', $font->translateChar("\x00\x41"));
+        $this->assertSame('α', $font->translateChar("\x03\xB1"));
+        $this->assertSame('∑', $font->translateChar("\x22\x11"));
+
+        // Multi-code-unit destination prefix in wide bfrange
+        $this->assertSame('10', $font->translateChar("\xE0\x00"));
+        $this->assertSame('12', $font->translateChar("\xE0\x02"));
+
+        // Unmapped code outside ranges returns MISSING
+        $this->assertSame(Font::MISSING, $font->translateChar("\xFF\xFE"));
+    }
 }

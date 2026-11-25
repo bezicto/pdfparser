@@ -1,28 +1,39 @@
 {
-    "name": "smalot/pdfparser",
-    "description": "Pdf parser library. Can read and extract information from pdf file.",
-    "keywords": ["PDF", "text", "parser", "parse", "extract"],
+    "name": "bezicto/pdfparser",
+    "description": "Standalone PHP PDF parser library to extract text, metadata, and page details with low memory usage.",
+    "keywords": ["PDF", "text", "parser", "parse", "extract", "php"],
     "type": "library",
-    "license": "LGPL-3.0",
+    "license": "LGPL-3.0-or-later",
     "authors": [
         {
+            "name": "Khairul Asyrani bin Sulaiman",
+            "email": "bezicto@gmail.com",
+            "homepage": "https://github.com/bezicto",
+            "role": "Maintainer"
+        },
+        {
             "name": "Sebastien MALOT",
-            "email": "sebastien@malot.fr"
+            "email": "sebastien@malot.fr",
+            "role": "Original Author"
         }
     ],
     "support": {
-        "issues": "https://github.com/smalot/pdfparser/issues"
+        "issues": "https://github.com/bezicto/pdfparser/issues",
+        "source": "https://github.com/bezicto/pdfparser"
     },
-    "homepage": "https://www.pdfparser.org",
+    "homepage": "https://github.com/bezicto/pdfparser",
     "require": {
         "php": ">=7.1",
         "symfony/polyfill-mbstring": "^1.18",
         "ext-zlib": "*",
         "ext-iconv": "*"
     },
+    "replace": {
+        "smalot/pdfparser": "*"
+    },
     "autoload": {
-        "psr-0": {
-            "Smalot\\PdfParser\\": "src/"
+        "psr-4": {
+            "Smalot\\PdfParser\\": "src/Smalot/PdfParser/"
         }
     },
     "autoload-dev": {

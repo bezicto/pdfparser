@@ -50,6 +50,11 @@ class Font extends PDFObject
     /**
      * @var array
      */
+    protected $rangeOffsets = [];
+
+    /**
+     * @var array
+     */
     protected $tableSizes;
 
     /**
@@ -136,6 +141,17 @@ class Font extends PDFObject
             return $this->table[$dec];
         }
 
+        // On-demand evaluation for wide CMap ranges (avoids pre-allocating tens of thousands of array keys)
+        if (!empty($this->rangeOffsets)) {
+            foreach ($this->rangeOffsets as $range) {
+                if ($dec >= $range['from'] && $dec <= $range['to']) {
+                    $this->table[$dec] = $range['prefix'].self::uchr($dec - $range['from'] + $range['offset']);
+
+                    return $this->table[$dec];
+                }
+            }
+        }
+
         // fallback for decoding single-byte ANSI characters that are not in the lookup table
         $fallbackDecoded = $char;
         if (
@@ -201,6 +217,7 @@ class Font extends PDFObject
         }
 
         $this->table = [];
+        $this->rangeOffsets = [];
         $this->tableSizes = [
             'from' => 1,
             'to' => 1,
@@ -297,8 +314,18 @@ class Font extends PDFObject
                                 $prefix .= self::uchr(hexdec($part));
                             }
 
-                            for ($char = $char_from; $char <= $char_to; ++$char) {
-                                $this->table[$char] = $prefix.self::uchr($char - $char_from + $offset);
+                            // Lazy-evaluate wide ranges (> 256) on-demand to prevent memory exhaustion
+                            if (($char_to - $char_from) > 256) {
+                                $this->rangeOffsets[] = [
+                                    'from' => $char_from,
+                                    'to' => $char_to,
+                                    'offset' => $offset,
+                                    'prefix' => $prefix,
+                                ];
+                            } else {
+                                for ($char = $char_from; $char <= $char_to; ++$char) {
+                                    $this->table[$char] = $prefix.self::uchr($char - $char_from + $offset);
+                                }
                             }
                         } else {
                             // Support for : <srcCode1> <srcCodeN> [<dstString1> <dstString2> ... <dstStringN>]
@@ -343,6 +370,7 @@ class Font extends PDFObject
     public function setTable(array $table)
     {
         $this->table = $table;
+        $this->rangeOffsets = [];
     }
 
     /**
@@ -369,6 +397,22 @@ class Font extends PDFObject
         $textLength = mb_strlen($text);
         for ($i = 0; $i < $textLength; ++$i) {
             $char = mb_substr($text, $i, 1);
+            if (!\array_key_exists($char, $index_map) && !empty($this->rangeOffsets)) {
+                $unpacked = unpack('N', mb_convert_encoding($char, 'UTF-32BE', 'UTF-8'));
+                if (false !== $unpacked && isset($unpacked[1])) {
+                    $codepoint = $unpacked[1];
+                    foreach ($this->rangeOffsets as $range) {
+                        if ('' === $range['prefix']) {
+                            $dec = $range['from'] + ($codepoint - $range['offset']);
+                            if (\is_int($dec) && $dec >= $range['from'] && $dec <= $range['to']) {
+                                $this->table[$dec] = $char;
+                                $index_map[$char] = $dec;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
             if (
                 !\array_key_exists($char, $index_map)
                 || !\array_key_exists($index_map[$char], $width_map)
