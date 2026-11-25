@@ -191,6 +191,49 @@ class PDFObjectTest extends TestCase
         self::assertSame('Plain FPDF', $dataTm[0][1]);
     }
 
+    public function testGetUniqueIdUsesObjectIdWithoutDeprecation(): void
+    {
+        $document = new Document();
+        $first = new class ($document) extends PDFObject {
+            public function exposeUniqueId(): string
+            {
+                return $this->getUniqueId();
+            }
+        };
+        $second = new class ($document) extends PDFObject {
+            public function exposeUniqueId(): string
+            {
+                return $this->getUniqueId();
+            }
+        };
+
+        set_error_handler(static function (int $severity, string $message): never {
+            throw new \ErrorException($message, 0, $severity);
+        }, \E_DEPRECATED | \E_USER_DEPRECATED);
+
+        try {
+            $firstId = $first->exposeUniqueId();
+            $secondId = $second->exposeUniqueId();
+
+            self::assertSame((string) spl_object_id($first), $firstId);
+            self::assertSame($firstId, $first->exposeUniqueId());
+            self::assertNotSame($firstId, $secondId);
+
+            // Exercise PDFObject::getTextArray() and XObject\Form::getText() recursion tracking
+            $form = new Form($document, null, 'BT /F1 12 Tf (No deprecation) Tj ET', new Config());
+            $header = new Header([
+                'Resources' => new Header([
+                    'XObject' => new Header(['Fr0' => $form]),
+                ]),
+                'Contents' => new ElementArray([new Element('/Fr0 Do', $document)], $document),
+            ]);
+            $page = new Page($document, $header);
+            self::assertSame(['No deprecation '], $page->getTextArray());
+        } finally {
+            restore_error_handler();
+        }
+    }
+
     /**
      * Provides the text array of a page, whose content stream invokes a form
      * XObject with the given content.

@@ -1351,6 +1351,6 @@ class PDFObject
      */
     protected function getUniqueId(): string
     {
-        return spl_object_hash($this);
+        return (string) spl_object_id($this);
     }
 }
