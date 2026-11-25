@@ -225,4 +225,79 @@ class FilterHelperTest extends TestCase
 
         $this->assertSame('ABCXXX', $result);
     }
+
+    public function testDecodeFilterRunLengthDecodeTruncatedTrailingByte(): void
+    {
+        // Trailing repeat marker 0xFE without a following byte must not fail
+        $result = $this->fixture->decodeFilter('RunLengthDecode', "\x02ABC\xFE");
+
+        $this->assertSame('ABC', $result);
+    }
+
+    public function testDecodeFilterASCII85DecodeZeroShortcutAndTrailingData(): void
+    {
+        $this->assertSame("\x00\x00\x00\x00", $this->fixture->decodeFilter('ASCII85Decode', 'z~>'));
+        $this->assertSame("\x00\x00\x00\x00Hello", $this->fixture->decodeFilter('ASCII85Decode', 'z87cURDZ~>trailing'));
+    }
+
+    public function testDecodeFilterASCIIHexDecodeOddDigitsPerPdfSpec(): void
+    {
+        // ISO 32000-1:2008, 7.4.2: odd trailing hex digit behaves as if followed by 0
+        $this->assertSame("\x41\x40", $this->fixture->decodeFilter('ASCIIHexDecode', '414>'));
+    }
+
+    public function testDecodeFilterLZWDecodeKwKwKAndMemoryLimit(): void
+    {
+        // Encode "ABABABA" with 9-bit LZW codes (Clear=256, A=65, B=66, AB=258, BA=259, ABA=260, EOD=257)
+        // Includes KwKwK case (code 260 emitted immediately as it is entered into dictionary)
+        $codes = [256, 65, 66, 258, 260, 257];
+        $bits = '';
+        foreach ($codes as $c) {
+            $bits .= str_pad(decbin($c), 9, '0', \STR_PAD_LEFT);
+        }
+        $bits = str_pad($bits, (int) (ceil(\strlen($bits) / 8) * 8), '0', \STR_PAD_RIGHT);
+        $bytes = '';
+        for ($i = 0; $i < \strlen($bits); $i += 8) {
+            $bytes .= \chr((int) bindec(substr($bits, $i, 8)));
+        }
+
+        $this->assertSame('ABABABA', $this->fixture->decodeFilter('LZWDecode', $bytes));
+
+        // Verify decodeMemoryLimit is enforced
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('decode memory limit exceeded');
+        $this->fixture->decodeFilter('LZWDecode', $bytes, 3);
+    }
+
+    public function testDecodePredictorPngAndTiff(): void
+    {
+        // 3 columns, 2 rows of raw bytes: row0 = [10, 20, 30], row1 = [15, 25, 35]
+        $expected = "\x0A\x14\x1E\x0F\x19\x23";
+
+        // Predictor 1 (no prediction) returns data unchanged
+        $this->assertSame($expected, $this->fixture->decodePredictor($expected, 1, 3));
+
+        // PNG Sub (filter=1): diffs against reconstructed left byte
+        $pngSub = "\x01\x0A\x0A\x0A\x01\x0F\x0A\x0A";
+        $this->assertSame($expected, $this->fixture->decodePredictor($pngSub, 11, 3));
+
+        // PNG Up (filter=2)
+        $pngUp = "\x02\x0A\x14\x1E\x02\x05\x05\x05";
+        $this->assertSame($expected, $this->fixture->decodePredictor($pngUp, 12, 3));
+
+        // PNG Average (filter=3)
+        // row0: [10, 20-(10>>1)=15, 30-(20>>1)=20], row1: [15-(10>>1)=10, 25-((15+20)>>1)=8, 35-((25+30)>>1)=8]
+        $pngAvg = "\x03\x0A\x0F\x14\x03\x0A\x08\x08";
+        $this->assertSame($expected, $this->fixture->decodePredictor($pngAvg, 13, 3));
+
+        // PNG Paeth (filter=4)
+        // row0: left=[0,10,20], up=[0,0,0], upleft=[0,0,0] -> pr=[0,10,20] -> enc=[10,10,10]
+        // row1: [15-10=5, paeth(15,20,10)=20 -> 25-20=5, paeth(25,30,20)=30 -> 35-30=5]
+        $pngPaeth = "\x04\x0A\x0A\x0A\x04\x05\x05\x05";
+        $this->assertSame($expected, $this->fixture->decodePredictor($pngPaeth, 14, 3));
+
+        // TIFF Predictor 2 (horizontal differencing, bpp=1)
+        $tiff = "\x0A\x0A\x0A\x0F\x0A\x0A";
+        $this->assertSame($expected, $this->fixture->decodePredictor($tiff, 2, 3));
+    }
 }

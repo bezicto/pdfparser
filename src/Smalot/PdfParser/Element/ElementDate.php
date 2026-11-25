@@ -114,7 +114,11 @@ class ElementDate extends ElementString
                     $name = substr($name, 0, -4).'+0000';
                 }
 
-                $format = self::$formats[\strlen($name)];
+                $nameLen = \strlen($name);
+                if (!isset(self::$formats[$nameLen])) {
+                    return false;
+                }
+                $format = self::$formats[$nameLen];
                 $date = \DateTime::createFromFormat($format, $name, new \DateTimeZone('UTC'));
             } else {
                 // special cases

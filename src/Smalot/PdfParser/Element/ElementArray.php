@@ -93,7 +93,7 @@ class ElementArray extends Element
      */
     protected function resolveXRef(string $name)
     {
-        if (($obj = $this->value[$name]) instanceof ElementXRef) {
+        if (($obj = $this->value[$name]) instanceof ElementXRef && null !== $this->document) {
             /** @var ElementXRef $obj */
             $obj = $this->document->getObjectById($obj->getId());
             $this->value[$name] = $obj;
