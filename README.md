@@ -1,5 +1,10 @@
 # PDF Parser for PHP
 
+[![Latest Stable Version](https://img.shields.io/packagist/v/bezicto/pdfparser.svg)](https://packagist.org/packages/bezicto/pdfparser)
+[![Total Downloads](https://img.shields.io/packagist/dt/bezicto/pdfparser.svg)](https://packagist.org/packages/bezicto/pdfparser)
+[![PHP Version](https://img.shields.io/packagist/php-v/bezicto/pdfparser.svg)](https://packagist.org/packages/bezicto/pdfparser)
+[![License](https://img.shields.io/packagist/l/bezicto/pdfparser.svg)](https://github.com/bezicto/pdfparser/blob/master/LICENSE.txt)
+
 `bezicto/pdfparser` is a pure-PHP library that reads PDF files and extracts text, page content, and document metadata — **without needing any external server tools** like `pdftotext`, Poppler, or Ghostscript.
 
 This repository is an enhanced fork of [`smalot/pdfparser`](https://github.com/smalot/pdfparser) (originally created by Sébastien Malot). It keeps the `Smalot\PdfParser` PHP namespace for **100% drop-in compatibility** while adding memory optimizations such as **on-demand (lazy) CMap font range decoding**, preventing out-of-memory crashes when parsing academic journals, scientific papers, and complex Unicode/CID fonts.
@@ -47,7 +52,7 @@ If you want Composer to pull directly from this GitHub repository, add the `repo
         }
     ],
     "require": {
-        "bezicto/pdfparser": "dev-master"
+        "bezicto/pdfparser": "^1.0"
     }
 }
 ```
@@ -69,7 +74,7 @@ require_once '/path/to/pdfparser/alt_autoload.php-dist';
 ```
 
 > **Migrating from `smalot/pdfparser`?**
-> This package keeps the `Smalot\PdfParser` namespace and declares `"replace": { "smalot/pdfparser": "*" }` in Composer, so your existing `use Smalot\PdfParser\Parser;` code works without any changes.
+> This package keeps the `Smalot\PdfParser` namespace and declares `"replace": { "smalot/pdfparser": "^2.0" }` in Composer, so your existing `use Smalot\PdfParser\Parser;` code works without any changes.
 
 ---
 

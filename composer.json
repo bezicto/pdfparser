@@ -28,8 +28,11 @@
         "ext-zlib": "*",
         "ext-iconv": "*"
     },
+    "suggest": {
+        "ext-mbstring": "Provides faster native UTF-8 handling instead of symfony/polyfill-mbstring"
+    },
     "replace": {
-        "smalot/pdfparser": "*"
+        "smalot/pdfparser": "^2.0"
     },
     "autoload": {
         "psr-4": {
@@ -40,6 +43,11 @@
         "psr-4": {
             "PerformanceTests\\": "tests/Performance/",
             "PHPUnitTests\\": "tests/PHPUnit/"
+        }
+    },
+    "extra": {
+        "branch-alias": {
+            "dev-master": "1.x-dev"
         }
     },
     "config": {
