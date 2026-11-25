@@ -1,9 +1,9 @@
 # PDF Parser for PHP
 
-[![Latest Stable Version](https://img.shields.io/packagist/v/bezicto/pdfparser.svg)](https://packagist.org/packages/bezicto/pdfparser)
-[![Total Downloads](https://img.shields.io/packagist/dt/bezicto/pdfparser.svg)](https://packagist.org/packages/bezicto/pdfparser)
-[![PHP Version](https://img.shields.io/packagist/php-v/bezicto/pdfparser.svg)](https://packagist.org/packages/bezicto/pdfparser)
-[![License](https://img.shields.io/packagist/l/bezicto/pdfparser.svg)](https://github.com/bezicto/pdfparser/blob/master/LICENSE.txt)
+[![Latest Stable Version](https://img.shields.io/packagist/v/bezicto/pdfparser)](https://packagist.org/packages/bezicto/pdfparser)
+[![Total Downloads](https://img.shields.io/packagist/dt/bezicto/pdfparser)](https://packagist.org/packages/bezicto/pdfparser)
+[![PHP Version](https://img.shields.io/packagist/dependency-v/bezicto/pdfparser/php)](https://packagist.org/packages/bezicto/pdfparser)
+[![License](https://img.shields.io/packagist/l/bezicto/pdfparser)](https://github.com/bezicto/pdfparser/blob/master/LICENSE.txt)
 
 `bezicto/pdfparser` is a pure-PHP library that reads PDF files and extracts text, page content, and document metadata — **without needing any external server tools** like `pdftotext`, Poppler, or Ghostscript.
 
