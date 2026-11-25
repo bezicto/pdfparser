@@ -45,18 +45,29 @@ class Pages extends PDFObject
     protected $fonts;
 
     /**
+     * @var array<\Smalot\PdfParser\PDFObject>|null
+     */
+    protected $xobjects;
+
+    /**
      * @todo Objects other than Pages or Page might need to be treated specifically
      *       in order to get Page objects out of them.
      *
-     * @param \SplObjectStorage<self, null>|null $ancestorRefs Pages nodes on the path from the root to this
-     *                                                         node; used by the recursion to detect cycles.
-     *                                                         Leave it null when calling from the outside.
+     * @param \SplObjectStorage<self, null>|null $ancestorRefs      Pages nodes on the path from the root to this
+     *                                                              node; used by the recursion to detect cycles.
+     *                                                              Leave it null when calling from the outside.
+     * @param array<\Smalot\PdfParser\Font>      $inheritedFonts    Fonts inherited from ancestor /Pages nodes
+     * @param array<\Smalot\PdfParser\PDFObject> $inheritedXObjects XObjects inherited from ancestor /Pages nodes
      *
      * @see https://github.com/smalot/pdfparser/issues/331
      * @see https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/PDF32000_2008.pdf#page=83 ISO 32000-1:2008, 7.7.3 (page tree)
      */
-    public function getPages(bool $deep = false, ?\SplObjectStorage $ancestorRefs = null): array
-    {
+    public function getPages(
+        bool $deep = false,
+        ?\SplObjectStorage $ancestorRefs = null,
+        array $inheritedFonts = [],
+        array $inheritedXObjects = []
+    ): array {
         if (!$this->has('Kids')) {
             return [];
         }
@@ -81,21 +92,31 @@ class Pages extends PDFObject
         $ancestorRefs->offsetSet($this);
 
         try {
-            // Prepare to apply the Pages' object's fonts to each page
+            // Prepare inheritable Resources (Fonts & XObjects) for descendant Pages and Page leaves
             if (false === \is_array($this->fonts)) {
                 $this->setupFonts();
             }
-            $fontsAvailable = 0 < \count($this->fonts);
+            if (false === \is_array($this->xobjects)) {
+                $this->setupXObjects();
+            }
+
+            $effectiveFonts = [] !== $this->fonts ? array_merge($inheritedFonts, $this->fonts) : $inheritedFonts;
+            $effectiveXObjects = [] !== $this->xobjects ? array_merge($inheritedXObjects, $this->xobjects) : $inheritedXObjects;
+            $fontsAvailable = [] !== $effectiveFonts;
+            $xobjectsAvailable = [] !== $effectiveXObjects;
 
             $kids = $kidsElement->getContent();
             $pages = [];
 
             foreach ($kids as $kid) {
                 if ($kid instanceof self) {
-                    $pages = array_merge($pages, $kid->getPages(true, $ancestorRefs));
+                    $pages = array_merge($pages, $kid->getPages(true, $ancestorRefs, $effectiveFonts, $effectiveXObjects));
                 } elseif ($kid instanceof Page) {
                     if ($fontsAvailable) {
-                        $kid->setFonts($this->fonts);
+                        $kid->setFonts($effectiveFonts);
+                    }
+                    if ($xobjectsAvailable) {
+                        $kid->setXObjects($effectiveXObjects);
                     }
                     $pages[] = $kid;
                 }
@@ -104,6 +125,44 @@ class Pages extends PDFObject
             return $pages;
         } finally {
             $ancestorRefs->offsetUnset($this);
+        }
+    }
+
+    /**
+     * Gathers inheritable XObjects defined on this /Pages node.
+     *
+     * @internal
+     */
+    protected function setupXObjects(): void
+    {
+        $resources = $this->get('Resources');
+
+        if (method_exists($resources, 'has') && $resources->has('XObject')) {
+            $xobjRes = $resources->get('XObject');
+            if ($xobjRes instanceof Element\ElementMissing) {
+                $this->xobjects = [];
+
+                return;
+            }
+
+            if ($xobjRes instanceof Header) {
+                $xobjects = $xobjRes->getElements();
+            } else {
+                $xobjects = $xobjRes->getHeader()->getElements();
+            }
+
+            $table = [];
+            foreach ($xobjects as $id => $xobject) {
+                $table[$id] = $xobject;
+                $cleanId = preg_replace('/[^0-9\.\-_]/', '', $id);
+                if ('' != $cleanId && !isset($table[$cleanId])) {
+                    $table[$cleanId] = $xobject;
+                }
+            }
+
+            $this->xobjects = $table;
+        } else {
+            $this->xobjects = [];
         }
     }
 
@@ -136,10 +195,10 @@ class Pages extends PDFObject
                 if ($font instanceof Font) {
                     $table[$id] = $font;
 
-                    // Store too on cleaned id value (only numeric)
-                    $id = preg_replace('/[^0-9\.\-_]/', '', $id);
-                    if ('' != $id) {
-                        $table[$id] = $font;
+                    // Store fallback cleaned id value (only numeric) without overwriting exact keys
+                    $cleanId = preg_replace('/[^0-9\.\-_]/', '', $id);
+                    if ('' != $cleanId && !isset($table[$cleanId])) {
+                        $table[$cleanId] = $font;
                     }
                 }
             }

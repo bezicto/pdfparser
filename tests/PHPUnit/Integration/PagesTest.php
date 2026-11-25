@@ -124,4 +124,30 @@ class PagesTest extends TestCase
         $this->assertCount(2, $pages);
         $this->assertContainsOnlyInstancesOf(Page::class, $pages);
     }
+
+    /**
+     * Resources (/Font and /XObject) defined on an ancestor /Pages node must propagate
+     * across intermediate /Pages nodes down to leaf /Page objects (ISO 32000-1, 7.7.3.4).
+     */
+    public function testInheritedResourcesPropagateAcrossNestedPagesNodes(): void
+    {
+        $formBody = 'BT /F1 12 Tf (Inherited) Tj ET';
+        $pageBody = '/Fm1 Do';
+        $pdf = $this->createPdf([
+            1 => '<< /Type /Catalog /Pages 2 0 R >>',
+            2 => '<< /Type /Pages /Resources << /Font << /F1 6 0 R >> /XObject << /Fm1 7 0 R >> >> /Kids [3 0 R] /Count 1 >>',
+            3 => '<< /Type /Pages /Parent 2 0 R /Kids [4 0 R] /Count 1 >>',
+            4 => '<< /Type /Page /Parent 3 0 R /Contents 5 0 R >>',
+            5 => '<< /Length '.\strlen($pageBody)." >>\nstream\n".$pageBody."\nendstream",
+            6 => '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+            7 => '<< /Type /XObject /Subtype /Form /Length '.\strlen($formBody)." >>\nstream\n".$formBody."\nendstream",
+        ]);
+
+        $document = $this->getParserInstance()->parseContent($pdf);
+        $page = $document->getPages()[0];
+
+        $this->assertInstanceOf(Font::class, $page->getFont('F1'));
+        $this->assertNotNull($page->getXObject('Fm1'));
+        $this->assertSame('Inherited', trim($page->getText()));
+    }
 }

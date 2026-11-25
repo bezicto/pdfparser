@@ -101,6 +101,10 @@ class RobustnessTest extends TestCase
         $document = $this->getParserInstance($config)->parseContent($pdf);
 
         $this->assertInstanceOf(Document::class, $document);
+
+        // Even when the lazy stream is explicitly requested, decodeMemoryLimit bounds expansion
+        $content = $document->getObjectById('2_0')->getContent();
+        $this->assertLessThanOrEqual(10 * 1024 * 1024, \strlen((string) $content));
     }
 
     /**
@@ -185,6 +189,72 @@ class RobustnessTest extends TestCase
         $document = $this->getParserInstance()->parseContent($this->createPdf($objects));
 
         $this->assertCount(1, $document->getPages());
+    }
+
+    /**
+     * A self-referential Form XObject (/Fm1 Do inside Fm1) must not cause infinite recursion.
+     */
+    public function testCyclicFormXObjectDoesNotRecurseInfinitely(): void
+    {
+        $formStream = 'BT (Loop) Tj ET /Fm1 Do';
+        $pageStream = '/Fm1 Do';
+        $pdf = $this->createPdf([
+            1 => '<< /Type /Catalog /Pages 2 0 R >>',
+            2 => '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+            3 => '<< /Type /Page /Parent 2 0 R /Resources << /XObject << /Fm1 4 0 R >> >> /Contents 5 0 R >>',
+            4 => '<< /Type /XObject /Subtype /Form /Resources << /XObject << /Fm1 4 0 R >> >> /Length '.\strlen($formStream)." >>\nstream\n".$formStream."\nendstream",
+            5 => '<< /Length '.\strlen($pageStream)." >>\nstream\n".$pageStream."\nendstream",
+        ]);
+
+        $document = $this->getParserInstance()->parseContent($pdf);
+        $this->assertStringContainsString('Loop', $document->getText());
+    }
+
+    /**
+     * Unbalanced Q operators without matching q must not crash getText() or getDataTm().
+     */
+    public function testUnbalancedGraphicsStateRestoreDoesNotCrash(): void
+    {
+        $pageStream = 'Q Q BT /F1 12 Tf (Safe) Tj Q ET';
+        $pdf = $this->createPdf([
+            1 => '<< /Type /Catalog /Pages 2 0 R >>',
+            2 => '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+            3 => '<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>',
+            4 => '<< /Length '.\strlen($pageStream)." >>\nstream\n".$pageStream."\nendstream",
+        ]);
+
+        $document = $this->getParserInstance()->parseContent($pdf);
+        $page = $document->getPages()[0];
+
+        $this->assertSame('Safe', trim($page->getText()));
+        $dataTm = $page->getDataTm();
+        $this->assertCount(1, $dataTm);
+        $this->assertSame('Safe', $dataTm[0][1]);
+    }
+
+    /**
+     * Odd-length dictionaries, inaccurate /Length values, 16-char dates, and unreadable files
+     * must be handled cleanly without warnings or TypeErrors.
+     */
+    public function testMalformedStructuresAndMissingFileHandledCleanly(): void
+    {
+        // Odd dictionary + oversized /Length + 16-char PDF date
+        $streamBody = 'BT (Recovered) Tj ET';
+        $pdf = $this->createPdf([
+            1 => '<< /Type /Catalog /Pages 2 0 R /DanglingKey >>',
+            2 => '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+            3 => '<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>',
+            4 => '<< /Length 999999 >>'."\nstream\n".$streamBody."\nendstream",
+            5 => '<< /CreationDate (D:2024010112000012) /Title (Test \\\\\\xe0\\xb5/) >>',
+        ], '/Info 5 0 R ');
+
+        $document = $this->getParserInstance()->parseContent($pdf);
+        $this->assertSame('Recovered', trim($document->getText()));
+        $this->assertIsArray($document->getDetails());
+
+        // Unreadable/non-existent file raises a clean Exception (not TypeError)
+        $this->expectException(\Exception::class);
+        $this->getParserInstance()->parseFile('/nonexistent/path/to/missing.pdf');
     }
 
     /**

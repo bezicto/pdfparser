@@ -149,6 +149,48 @@ class PDFObjectTest extends TestCase
         self::assertSame(['a(b)c '], $this->getTextArrayOfFormContent($content));
     }
 
+    public function testLexerHandlesCommentsHyphenatedNamesSingleByteHexAndLeadingKerningTj(): void
+    {
+        $content = "% Comment with (unbalanced paren and BT\n"
+            ."BT /My-g 12 Tf 10 10 Td [-50 (hello (world)) -100 (next)] TJ <61> Tj ET";
+
+        self::assertSame(['hello (world) nexta '], $this->getTextArrayOfFormContent($content));
+    }
+
+    public function testRepeatedSiblingXObjectInvocationsArePreserved(): void
+    {
+        $document = new Document();
+        $document->init();
+
+        $config = new Config();
+        $form = new Form($document, null, 'BT /F1 12 Tf (Tag) Tj ET', $config);
+        $header = new Header([
+            'Resources' => new Header([
+                'XObject' => new Header(['Fr0' => $form]),
+            ]),
+            'Contents' => new ElementArray([new Element('/Fr0 Do /Fr0 Do', $document)], $document),
+        ]);
+
+        $text = trim((new Page($document, $header, null, $config))->getText());
+        self::assertSame('Tag Tag', $text);
+    }
+
+    public function testPlainFpdfDocumentWithoutXObjectsDoesNotCrash(): void
+    {
+        $document = new Document();
+        $info = new PDFObject($document, new Header(['Producer' => new Element('FPDF 1.86')]));
+        $pageContent = new PDFObject($document, new Header([]), 'BT /F1 12 Tf 10 20 Td (Plain FPDF) Tj ET', new Config());
+        $page = new Page($document, new Header(['Type' => new Element('Page'), 'Contents' => $pageContent]), null, new Config());
+        $document->setTrailer(new Header(['Info' => $info], $document));
+        $document->setObjects(['1_0' => $page, '2_0' => $info]);
+
+        self::assertTrue($page->isFpdf());
+        self::assertSame(['Plain FPDF'], $page->getTextArray());
+        $dataTm = $page->getDataTm();
+        self::assertCount(1, $dataTm);
+        self::assertSame('Plain FPDF', $dataTm[0][1]);
+    }
+
     /**
      * Provides the text array of a page, whose content stream invokes a form
      * XObject with the given content.

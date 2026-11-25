@@ -55,14 +55,40 @@ class Page extends PDFObject
     protected $dataTm;
 
     /**
+     * Inherited fonts propagated from ancestor /Pages nodes (ISO 32000-1, 7.7.3.4).
+     *
+     * @var Font[]
+     */
+    protected $inheritedFonts = [];
+
+    /**
+     * Inherited XObjects propagated from ancestor /Pages nodes (ISO 32000-1, 7.7.3.4).
+     *
+     * @var PDFObject[]
+     */
+    protected $inheritedXObjects = [];
+
+    /**
      * @param array<\Smalot\PdfParser\Font> $fonts
      *
      * @internal
      */
     public function setFonts($fonts)
     {
-        if (empty($this->fonts)) {
-            $this->fonts = $fonts;
+        if (empty($this->fonts) && empty($this->inheritedFonts) && !empty($fonts)) {
+            $this->inheritedFonts = $fonts;
+        }
+    }
+
+    /**
+     * @param array<\Smalot\PdfParser\PDFObject> $xobjects
+     *
+     * @internal
+     */
+    public function setXObjects(array $xobjects): void
+    {
+        if (empty($this->xobjects) && empty($this->inheritedXObjects) && !empty($xobjects)) {
+            $this->inheritedXObjects = $xobjects;
         }
     }
 
@@ -79,7 +105,7 @@ class Page extends PDFObject
 
         if (method_exists($resources, 'has') && $resources->has('Font')) {
             if ($resources->get('Font') instanceof ElementMissing) {
-                return [];
+                return $this->inheritedFonts;
             }
 
             if ($resources->get('Font') instanceof Header) {
@@ -88,16 +114,16 @@ class Page extends PDFObject
                 $fonts = $resources->get('Font')->getHeader()->getElements();
             }
 
-            $table = [];
+            $table = $this->inheritedFonts;
 
             foreach ($fonts as $id => $font) {
                 if ($font instanceof Font) {
                     $table[$id] = $font;
 
-                    // Store too on cleaned id value (only numeric)
-                    $id = preg_replace('/[^0-9\.\-_]/', '', $id);
-                    if ('' != $id) {
-                        $table[$id] = $font;
+                    // Store fallback cleaned id value (only numeric) without overwriting exact keys
+                    $cleanId = preg_replace('/[^0-9\.\-_]/', '', $id);
+                    if ('' != $cleanId && !isset($table[$cleanId])) {
+                        $table[$cleanId] = $font;
                     }
                 }
             }
@@ -105,7 +131,7 @@ class Page extends PDFObject
             return $this->fonts = $table;
         }
 
-        return [];
+        return $this->fonts = $this->inheritedFonts;
     }
 
     public function getFont(string $id): ?Font
@@ -152,22 +178,22 @@ class Page extends PDFObject
                 $xobjects = $resources->get('XObject')->getHeader()->getElements();
             }
 
-            $table = [];
+            $table = $this->inheritedXObjects;
 
             foreach ($xobjects as $id => $xobject) {
                 $table[$id] = $xobject;
 
-                // Store too on cleaned id value (only numeric)
-                $id = preg_replace('/[^0-9\.\-_]/', '', $id);
-                if ('' != $id) {
-                    $table[$id] = $xobject;
+                // Store fallback cleaned id value (only numeric) without overwriting exact keys
+                $cleanId = preg_replace('/[^0-9\.\-_]/', '', $id);
+                if ('' != $cleanId && !isset($table[$cleanId])) {
+                    $table[$cleanId] = $xobject;
                 }
             }
 
             return $this->xobjects = $table;
         }
 
-        return [];
+        return $this->xobjects = $this->inheritedXObjects;
     }
 
     public function getXObject(string $id): ?PDFObject
@@ -203,8 +229,11 @@ class Page extends PDFObject
 
                     foreach ($elements as $element) {
                         if ($element instanceof ElementXRef) {
-                            $new_content .= $element->getObject()->getContent();
-                        } else {
+                            $obj = $element->getObject();
+                            if (null !== $obj) {
+                                $new_content .= $obj->getContent();
+                            }
+                        } elseif (null !== $element) {
                             $new_content .= $element->getContent();
                         }
                     }
@@ -217,7 +246,9 @@ class Page extends PDFObject
                 $new_content = '';
 
                 foreach ($contents->getContent() as $content) {
-                    $new_content .= $content->getContent()."\n";
+                    if (null !== $content) {
+                        $new_content .= $content->getContent()."\n";
+                    }
                 }
 
                 $header = new Header([], $this->document);
@@ -324,13 +355,28 @@ class Page extends PDFObject
         return new self($pdfObject->document, $header, $new_content, $config);
     }
 
+    /**
+     * Whether this FPDF/FPDI page actually has a matching XObject template for its page number.
+     */
+    private function hasFpdfTemplate(): bool
+    {
+        if (!$this->isFpdf()) {
+            return false;
+        }
+
+        $pageNum = $this->getPageNumber();
+        $xObjects = $this->getXObjects();
+
+        return isset($xObjects[$pageNum]) && $xObjects[$pageNum] instanceof PDFObject;
+    }
+
     public function getTextArray(?self $page = null): array
     {
-        if ($this->isFpdf()) {
+        if ($this->hasFpdfTemplate()) {
             $pdfObject = $this->getPDFObjectForFpdf();
             $newPdfObject = $this->createPDFObjectForFpdf();
 
-            return $newPdfObject->getTextArray($pdfObject);
+            return $newPdfObject->getTextArray($pdfObject instanceof self ? $pdfObject : $this);
         } else {
             if ($contents = $this->get('Contents')) {
                 if ($contents instanceof ElementMissing) {
@@ -346,8 +392,11 @@ class Page extends PDFObject
                         /** @var PDFObject $element */
                         foreach ($elements as $element) {
                             if ($element instanceof ElementXRef) {
-                                $new_content .= $element->getObject()->getContent();
-                            } else {
+                                $obj = $element->getObject();
+                                if (null !== $obj) {
+                                    $new_content .= $obj->getContent();
+                                }
+                            } elseif (null !== $element) {
                                 $new_content .= $element->getContent();
                             }
                         }
@@ -356,7 +405,7 @@ class Page extends PDFObject
                         $contents = new PDFObject($this->document, $header, $new_content, $this->config);
                     } else {
                         try {
-                            $contents->getTextArray($this);
+                            return $contents->getTextArray($this);
                         } catch (\Throwable $e) {
                             return $contents->getTextArray();
                         }
@@ -367,7 +416,9 @@ class Page extends PDFObject
 
                     /** @var PDFObject $content */
                     foreach ($contents->getContent() as $content) {
-                        $new_content .= $content->getContent()."\n";
+                        if (null !== $content) {
+                            $new_content .= $content->getContent()."\n";
+                        }
                     }
 
                     $header = new Header([], $this->document);
@@ -397,7 +448,9 @@ class Page extends PDFObject
         if (isset($values) && \is_array($values)) {
             $text = '';
             foreach ($values as $section) {
-                $text .= $section->getContent();
+                if (null !== $section) {
+                    $text .= $section->getContent();
+                }
             }
             $sectionsText = $this->getSectionsText($text);
             foreach ($sectionsText as $sectionText) {
@@ -407,10 +460,10 @@ class Page extends PDFObject
                 }
             }
         } else {
-            if ($this->isFpdf()) {
+            if ($this->hasFpdfTemplate()) {
                 $content = $this->getPDFObjectForFpdf();
             }
-            $sectionsText = $content->getSectionsText($content->getContent());
+            $sectionsText = $content instanceof PDFObject ? $content->getSectionsText($content->getContent()) : [];
             foreach ($sectionsText as $sectionText) {
                 $commandsText = $content->getCommandsText($sectionText);
                 foreach ($commandsText as $command) {
@@ -438,7 +491,7 @@ class Page extends PDFObject
         $currentFont = null; /** @var Font $currentFont */
         $clippedFont = null;
         $fpdfPage = null;
-        if ($this->isFpdf()) {
+        if ($this->hasFpdfTemplate()) {
             $fpdfPage = $this->createPageForFpdf();
         }
         foreach ($extractedRawData as &$command) {
@@ -681,7 +734,64 @@ class Page extends PDFObject
      */
     public function getDataTm(?array $dataCommands = null): array
     {
-        if (!isset($dataCommands) || !$dataCommands) {
+        // Fast single-pass path when caller doesn't supply pre-extracted $dataCommands
+        if (null === $dataCommands) {
+            if ($this->hasFpdfTemplate()) {
+                $pdfObject = $this->getPDFObjectForFpdf();
+                $newPdfObject = $this->createPDFObjectForFpdf();
+                $resourceOwner = $pdfObject instanceof self ? $pdfObject : $this;
+                $this->dataTm = $newPdfObject->extractDataTm($resourceOwner);
+
+                return $this->dataTm;
+            }
+
+            $contents = $this->get('Contents');
+            if (!$contents || $contents instanceof ElementMissing || $contents instanceof ElementNull) {
+                $this->dataTm = [];
+
+                return [];
+            }
+
+            if ($contents instanceof PDFObject) {
+                $elements = $contents->getHeader()->getElements();
+                if (is_numeric(key($elements))) {
+                    $new_content = '';
+                    foreach ($elements as $element) {
+                        if ($element instanceof ElementXRef) {
+                            $obj = $element->getObject();
+                            if (null !== $obj) {
+                                $new_content .= $obj->getContent();
+                            }
+                        } elseif (null !== $element) {
+                            $new_content .= $element->getContent();
+                        }
+                    }
+                    $contents = new PDFObject($this->document, new Header([], $this->document), $new_content, $this->config);
+                }
+                $this->dataTm = $contents->extractDataTm($this);
+
+                return $this->dataTm;
+            }
+
+            if ($contents instanceof ElementArray) {
+                $new_content = '';
+                foreach ($contents->getContent() as $part) {
+                    if (null !== $part) {
+                        $new_content .= $part->getContent()."\n";
+                    }
+                }
+                $virtual = new PDFObject($this->document, new Header([], $this->document), $new_content, $this->config);
+                $this->dataTm = $virtual->extractDataTm($this);
+
+                return $this->dataTm;
+            }
+
+            $this->dataTm = [];
+
+            return [];
+        }
+
+        if (!$dataCommands) {
             $dataCommands = $this->getDataCommands();
         }
 
@@ -847,7 +957,7 @@ class Page extends PDFObject
                      */
                 case 'Tj':
                     $data = [$Tm, $currentText];
-                    if ($this->config->getDataTmFontInfoHasToBeIncluded()) {
+                    if (null !== $this->config && $this->config->getDataTmFontInfoHasToBeIncluded()) {
                         $data[] = $fontId;
                         $data[] = $fontSize;
                     }
@@ -913,7 +1023,7 @@ class Page extends PDFObject
                      */
                 case 'TJ':
                     $data = [$Tm, $currentText];
-                    if ($this->config->getDataTmFontInfoHasToBeIncluded()) {
+                    if (null !== $this->config && $this->config->getDataTmFontInfoHasToBeIncluded()) {
                         $data[] = $fontId;
                         $data[] = $fontSize;
                     }
@@ -931,7 +1041,9 @@ class Page extends PDFObject
                      * Load last saved graphics state from stack
                      */
                 case 'Q':
-                    $concatTm = array_pop($graphicsStatesStack);
+                    if (!empty($graphicsStatesStack)) {
+                        $concatTm = array_pop($graphicsStatesStack);
+                    }
                     break;
                 default:
             }

@@ -4,11 +4,13 @@ require __DIR__.'/../../vendor/autoload.php';
 
 use PerformanceTests\Exception\PerformanceFailException;
 use PerformanceTests\Test\DocumentDictionaryCacheTest;
+use PerformanceTests\Test\GraphicsHeavyContentStreamTest;
 use PerformanceTests\Test\KernedTjArrayFormatContentTest;
 
 $tests = [
     new DocumentDictionaryCacheTest(),
     new KernedTjArrayFormatContentTest(),
+    new GraphicsHeavyContentStreamTest(),
 ];
 
 foreach ($tests as $test) {
