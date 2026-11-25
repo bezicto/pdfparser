@@ -41,7 +41,9 @@ use Smalot\PdfParser\Element\ElementNull;
 use Smalot\PdfParser\Element\ElementNumeric;
 use Smalot\PdfParser\Element\ElementString;
 use Smalot\PdfParser\Element\ElementXRef;
+use Smalot\PdfParser\RawData\LazyStream;
 use Smalot\PdfParser\RawData\RawDataParser;
+use Smalot\PdfParser\XObject\Image;
 
 /**
  * Class Parser
@@ -76,9 +78,18 @@ class Parser
      */
     public function parseFile(string $filename): Document
     {
+        if (!is_file($filename) || !is_readable($filename)) {
+            throw new \Exception('Unable to read file: '.$filename);
+        }
+
+        $content = @file_get_contents($filename);
+        if (false === $content) {
+            throw new \Exception('Unable to read file: '.$filename);
+        }
+
         // parseContent() holds the only reference to the file content, which
         // enables it to release the content.
-        return $this->parseContent(file_get_contents($filename));
+        return $this->parseContent($content);
     }
 
     /**
@@ -105,10 +116,10 @@ class Parser
         $document = new Document();
         $this->objects = [];
 
-        // The raw objects are decoded one at a time. Each raw structure is
-        // turned into a PDFObject and goes out of scope before the next one
-        // gets decoded, so only one raw structure is held in memory at a time.
-        foreach ($this->rawDataParser->iterateIndirectObjects($pdfData, $xref) as $id => $structure) {
+        // The raw objects are decoded one at a time with lazy stream decompression.
+        // Only structural streams (/ObjStm, /XRef) are decompressed during parsing;
+        // page/font/image/metadata streams are decompressed on-demand when accessed.
+        foreach ($this->rawDataParser->iterateIndirectObjects($pdfData, $xref, true) as $id => $structure) {
             $this->parseObject($id, $structure, $document);
         }
 
@@ -148,6 +159,7 @@ class Parser
     {
         $header = new Header([], $document);
         $content = '';
+        $lazyStream = null;
 
         foreach ($structure as $position => $part) {
             if (\is_int($part)) {
@@ -171,7 +183,17 @@ class Parser
                     break;
 
                 case 'stream':
-                    $content = isset($part[3][0]) ? $part[3][0] : $part[1];
+                    $payload = isset($part[3][0]) ? $part[3][0] : $part[1];
+                    if ($payload instanceof LazyStream) {
+                        if ($header->get('Type')->equals('ObjStm')) {
+                            $content = $payload->decode();
+                        } else {
+                            $lazyStream = $payload;
+                            $content = '';
+                        }
+                    } else {
+                        $content = (string) $payload;
+                    }
 
                     if ($header->get('Type')->equals('ObjStm')) {
                         list($objectNumbers, $byteOffsets, $firstObjectOffset) = $this->getObjectStreamIndex($header, $content);
@@ -189,23 +211,26 @@ class Parser
 
                         $ids = array_values($table);
                         $positions = array_keys($table);
+                        $contentLen = \strlen($content);
 
                         foreach ($positions as $index => $position) {
-                            $id = $ids[$index].'_0';
-                            $next_position = isset($positions[$index + 1]) ? $positions[$index + 1] : \strlen($content);
-                            $sub_content = substr($content, $position, (int) $next_position - (int) $position);
+                            $subId = $ids[$index].'_0';
+                            if (isset($this->objects[$subId])) {
+                                // A newer incremental revision already defined this object
+                                continue;
+                            }
+                            $next_position = isset($positions[$index + 1]) ? $positions[$index + 1] : $contentLen;
+                            $sub_header = $position < $contentLen
+                                ? $this->parseObjectStreamEntry($content, (int) $position, (int) $next_position, $document)
+                                : new Header([], $document);
 
-                            $sub_header = Header::parse($sub_content, $document);
                             $object = PDFObject::factory($document, $sub_header, '', $this->config);
-                            $this->objects[$id] = $object;
+                            $this->objects[$subId] = $object;
                         }
 
                         // It is not necessary to store this content.
 
                         return;
-                    } elseif ($header->get('Type')->equals('Metadata')) {
-                        // Attempt to parse XMP XML Metadata
-                        $document->extractXMPMetadata($content);
                     }
                     break;
 
@@ -222,8 +247,40 @@ class Parser
         }
 
         if (!isset($this->objects[$id])) {
-            $this->objects[$id] = PDFObject::factory($document, $header, $content, $this->config);
+            $object = PDFObject::factory($document, $header, $content, $this->config);
+            if (null !== $lazyStream && !($object instanceof Image && false === $this->config->getRetainImageContent())) {
+                $object->setLazyStream($lazyStream);
+            }
+            $this->objects[$id] = $object;
         }
+    }
+
+    /**
+     * Parse an embedded object entry from an /ObjStm body using the fast byte-level RawDataParser
+     * instead of the legacy regex Header::parse() parser.
+     */
+    private function parseObjectStreamEntry(string $streamBody, int $start, int $end, ?Document $document): Header
+    {
+        $slice = substr($streamBody, $start, max(0, $end - $start));
+        if ('' === $slice) {
+            return new Header([], $document);
+        }
+
+        $raw = $this->rawDataParser->parseObjectFromString($slice, 0);
+        if ('<<' === $raw[0] && \is_array($raw[1])) {
+            return $this->parseHeader($raw[1], $document);
+        }
+
+        if ('[' === $raw[0] && \is_array($raw[1])) {
+            $elements = [];
+            foreach ($raw[1] as $sub) {
+                $elements[] = $this->parseHeaderElement($sub[0], $sub[1], $document);
+            }
+
+            return new Header($elements, $document);
+        }
+
+        return new Header([], $document);
     }
 
     /**
@@ -305,7 +362,7 @@ class Parser
         $elements = [];
         $count = \count($structure);
 
-        for ($position = 0; $position < $count; $position += 2) {
+        for ($position = 0; $position + 1 < $count; $position += 2) {
             $name = $structure[$position][1];
             $type = $structure[$position + 1][0];
             $value = $structure[$position + 1][1];
@@ -333,10 +390,7 @@ class Parser
         switch ($type) {
             case '<<':
             case '>>':
-                $header = $this->parseHeader($value, $document);
-                PDFObject::factory($document, $header, null, $this->config);
-
-                return $header;
+                return $this->parseHeader($value, $document);
 
             case 'numeric':
                 return new ElementNumeric($value);

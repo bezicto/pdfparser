@@ -33,6 +33,8 @@
 namespace Smalot\PdfParser;
 
 use Smalot\PdfParser\Exception\InvalidDictionaryObjectException;
+use Smalot\PdfParser\RawData\ContentStreamLexer;
+use Smalot\PdfParser\RawData\LazyStream;
 use Smalot\PdfParser\XObject\Form;
 use Smalot\PdfParser\XObject\Image;
 
@@ -71,9 +73,16 @@ class PDFObject
     protected $header;
 
     /**
-     * @var string
+     * @var string|null
      */
     protected $content;
+
+    /**
+     * Deferred stream decoder (decoded on first getContent() call and then released).
+     *
+     * @var LazyStream|null
+     */
+    protected $lazyStream;
 
     /**
      * @var Config|null
@@ -134,8 +143,23 @@ class PDFObject
         return $this->header->getDetails($deep);
     }
 
+    /**
+     * Attach a deferred stream decoder to be resolved on first getContent() call.
+     *
+     * @internal
+     */
+    public function setLazyStream(?LazyStream $lazyStream): void
+    {
+        $this->lazyStream = $lazyStream;
+    }
+
     public function getContent(): ?string
     {
+        if (null !== $this->lazyStream) {
+            $this->content = $this->lazyStream->decode();
+            $this->lazyStream = null;
+        }
+
         return $this->content;
     }
 
@@ -551,18 +575,16 @@ class PDFObject
 
     private function getDefaultFont(?Page $page = null): Font
     {
-        $fonts = [];
         if (null !== $page) {
             $fonts = $page->getFonts();
+            if ([] !== $fonts) {
+                return reset($fonts);
+            }
         }
 
         $firstFont = $this->document->getFirstFont();
         if (null !== $firstFont) {
-            $fonts[] = $firstFont;
-        }
-
-        if (\count($fonts) > 0) {
-            return reset($fonts);
+            return $firstFont;
         }
 
         return new Font($this->document, null, null, $this->config);
@@ -582,26 +604,24 @@ class PDFObject
         $orig_text = $font->decodeText($command, $fontFactor);
         $text = $orig_text;
 
-        // If we make this a Config option, we can add a check if it's
-        // enabled here.
-        if (null !== $page) {
-            $font_ids = array_keys($page->getFonts());
-
-            // If the decoded text contains UTF-8 control characters
-            // then the font page being used is probably the wrong one.
-            // Loop through the rest of the fonts to see if we can get
-            // a good decode. Allow x09 to x0d which are whitespace.
-            while (preg_match('/[\x00-\x08\x0e-\x1f\x7f]/u', $text) || false !== strpos(bin2hex($text), '00')) {
-                // If we're out of font IDs, then give up and use the
-                // original string
-                if (0 == \count($font_ids)) {
-                    return $orig_text;
+        // If the decoded text contains UTF-8 control characters (excluding whitespace \x09-\x0d)
+        // or a NUL byte, the font being used may be wrong. Try other unique fonts on the page.
+        if (null !== $page && (false !== strpos($text, "\x00") || 1 === preg_match('/[\x00-\x08\x0e-\x1f\x7f]/', $text))) {
+            $seen = [spl_object_hash($font) => true];
+            foreach ($page->getFonts() as $candidateFont) {
+                $hash = spl_object_hash($candidateFont);
+                if (isset($seen[$hash])) {
+                    continue;
                 }
+                $seen[$hash] = true;
 
-                // Try the next font ID
-                $font = $page->getFont(array_shift($font_ids));
-                $text = $font->decodeText($command, $fontFactor);
+                $text = $candidateFont->decodeText($command, $fontFactor);
+                if (false === strpos($text, "\x00") && 0 === preg_match('/[\x00-\x08\x0e-\x1f\x7f]/', $text)) {
+                    return $text;
+                }
             }
+
+            return $orig_text;
         }
 
         return $text;
@@ -679,8 +699,11 @@ class PDFObject
                     $arrayTypeNumeric = false;
 
                     // Move down one level in the stack
-                    $parsed = &$stack[\count($stack) - 1];
-                    unset($stack[\count($stack) - 1]);
+                    $stackDepth = \count($stack);
+                    if ($stackDepth > 0) {
+                        $parsed = &$stack[$stackDepth - 1];
+                        unset($stack[$stackDepth - 1]);
+                    }
                     break;
 
                 default:
@@ -739,7 +762,12 @@ class PDFObject
         $marked_stack = [];
         $last_written_position = false;
 
-        $sections = $this->getSectionsText($this->content);
+        $content = $this->getContent();
+        $commands = ContentStreamLexer::lexForText($content);
+        if ([] === $commands) {
+            return [];
+        }
+
         $current_font = $this->getDefaultFont($page);
         $current_font_size = 1;
         $current_text_leading = 0;
@@ -760,12 +788,13 @@ class PDFObject
         $clipped_font = [];
         $clipped_position_cm = [];
 
-        self::$recursionStack[] = $this->getUniqueId();
+        $uniqueId = $this->getUniqueId();
+        self::$recursionStack[$uniqueId] = true;
+        $doTextCache = [];
 
-        foreach ($sections as $section) {
-            $commands = $this->getCommandsText($section);
+        try {
             foreach ($commands as $command) {
-                switch ($command[self::OPERATOR]) {
+                switch ($command['o']) {
                     // Begin text object
                     case 'BT':
                         // Reset text positioning matrices
@@ -780,21 +809,23 @@ class PDFObject
 
                         // Begin marked content sequence with property list
                     case 'BDC':
-                        if (preg_match('/(<<.*>>)$/', $command[self::COMMAND], $match)) {
-                            $dict = $this->parseDictionary($match[1]);
+                        if (isset($command['dict']) && \is_string($command['dict'])) {
+                            $dict = $this->parseDictionary($command['dict']);
 
                             // Check for ActualText block
                             if (isset($dict['ActualText']) && \is_string($dict['ActualText']) && '' !== $dict['ActualText']) {
-                                if ('[' == $dict['ActualText'][0]) {
-                                    // Simulate a 'TJ' command on the stack
+                                if ('[' === $dict['ActualText'][0]) {
                                     $marked_stack[] = [
-                                        'ActualText' => $this->getCommandsText($dict['ActualText'].'TJ')[0],
+                                        'ActualText' => [
+                                            'o' => 'TJ',
+                                            'c' => ContentStreamLexer::parseTjArray(trim($dict['ActualText'], '[]')),
+                                        ],
                                     ];
-                                } elseif ('<' == $dict['ActualText'][0] || '(' == $dict['ActualText'][0]) {
-                                    // Simulate a 'Tj' command on the stack
-                                    $marked_stack[] = [
-                                        'ActualText' => $this->getCommandsText($dict['ActualText'].'Tj')[0],
-                                    ];
+                                } elseif ('<' === $dict['ActualText'][0] || '(' === $dict['ActualText'][0]) {
+                                    $atCmds = $this->getCommandsText($dict['ActualText'].'Tj');
+                                    if (isset($atCmds[0])) {
+                                        $marked_stack[] = ['ActualText' => $atCmds[0]];
+                                    }
                                 }
                             }
                         }
@@ -802,70 +833,51 @@ class PDFObject
 
                         // Begin marked content sequence
                     case 'BMC':
-                        if ('ReversedChars' == $command[self::COMMAND]) {
-                            // Upon encountering a ReversedChars command,
-                            // add the characters we've built up so far to
-                            // the result array
+                        if (isset($command['tag']) && 'ReversedChars' === $command['tag']) {
                             $result = array_merge($result, $text);
-
-                            // Start a fresh $text array that will contain
-                            // reversed characters
                             $text = [];
-
-                            // Add the reversed text flag to the stack
                             $marked_stack[] = ['ReversedChars' => true];
                         }
                         break;
 
                         // set graphics position matrix
                     case 'cm':
-                        $args = preg_split('/\s+/s', $command[self::COMMAND]);
+                        $args = $command['args'];
                         $current_position_cm = [
-                            'a' => (float) $args[0], 'b' => (float) $args[1], 'c' => 0,
-                            'i' => (float) $args[2], 'j' => (float) $args[3], 'k' => 0,
-                            'x' => (float) $args[4], 'y' => (float) $args[5], 'z' => 1,
+                            'a' => $args[0], 'b' => $args[1], 'c' => 0,
+                            'i' => $args[2], 'j' => $args[3], 'k' => 0,
+                            'x' => $args[4], 'y' => $args[5], 'z' => 1,
                         ];
                         break;
 
                     case 'Do':
-                        if (is_null($page)) {
+                        if (null === $page || !isset($command['name'])) {
                             break;
                         }
 
-                        $args = preg_split('/\s/s', $command[self::COMMAND]);
-                        $id = trim(array_pop($args), '/ ');
-                        $xobject = $page->getXObject($id);
+                        $xobject = $page->getXObject($command['name']);
 
-                        // Check we got a PDFObject back.
-                        if (!$xobject instanceof self) {
+                        if (!$xobject instanceof self || $xobject instanceof Image) {
                             break;
                         }
 
-                        // If the PDFObject is an Image, do nothing as images
-                        // aren't text.
-                        if ($xobject instanceof Image) {
+                        $xobjUid = $xobject->getUniqueId();
+                        if (isset(self::$recursionStack[$xobjUid])) {
                             break;
                         }
 
-                        // Check this is not a circular reference.
-                        if (\in_array($xobject->getUniqueId(), self::$recursionStack, true)) {
-                            break;
+                        if (isset($doTextCache[$xobjUid])) {
+                            $objectText = $doTextCache[$xobjUid];
+                        } else {
+                            $objectText = $xobject->getText($page);
+                            $doTextCache[$xobjUid] = $objectText;
                         }
 
-                        $objectText = $xobject->getText($page);
-
-                        // If the PDFObject is a Form and doesn't have any text,
-                        // skip it.
-                        if ($xobject instanceof Form && $objectText === ' ') {
+                        if ($xobject instanceof Form && ' ' === $objectText) {
                             break;
                         }
 
                         $text[] = $objectText;
-                        break;
-
-                        // Marked content point with (DP) & without (MP) property list
-                    case 'DP':
-                    case 'MP':
                         break;
 
                         // End text object
@@ -880,8 +892,12 @@ class PDFObject
 
                         // Restore previous selected font and graphics matrix
                     case 'Q':
-                        list($current_font, $current_font_size) = array_pop($clipped_font);
-                        $current_position_cm = array_pop($clipped_position_cm);
+                        if (!empty($clipped_font)) {
+                            list($current_font, $current_font_size) = array_pop($clipped_font);
+                        }
+                        if (!empty($clipped_position_cm)) {
+                            $current_position_cm = array_pop($clipped_position_cm);
+                        }
                         break;
 
                         // End marked content sequence
@@ -893,42 +909,30 @@ class PDFObject
                             $data = $marked[$action];
 
                             switch ($action) {
-                                // If we are in ReversedChars mode...
                                 case 'ReversedChars':
-                                    // Reverse the characters we've built up so far
                                     foreach ($text as $key => $t) {
                                         $text[$key] = implode('', array_reverse(
                                             mb_str_split($t, 1, mb_internal_encoding())
                                         ));
                                     }
-
-                                    // Add these characters to the result array
                                     $result = array_merge($result, $text);
-
-                                    // Start a fresh $text array that will contain
-                                    // non-reversed characters
                                     $text = [];
                                     break;
 
                                 case 'ActualText':
-                                    // Use the content of the ActualText as a command
                                     $command = $data;
                                     break;
                             }
                         }
 
-                        // If this EMC command has been transformed into a 'Tj'
-                        // or 'TJ' command because of being ActualText, then bypass
-                        // the break to proceed to the writing section below.
-                        if ('Tj' != $command[self::OPERATOR] && 'TJ' != $command[self::OPERATOR]) {
+                        if ('Tj' !== $command['o'] && 'TJ' !== $command['o']) {
                             break;
                         }
 
                         // no break
                     case "'":
                     case '"':
-                        if ("'" == $command[self::OPERATOR] || '"' == $command[self::OPERATOR]) {
-                            // Move to next line and write text
+                        if ("'" === $command['o'] || '"' === $command['o']) {
                             $current_position['x'] = 0;
                             $current_position_td['x'] = 0;
                             $current_position_td['y'] += $current_text_leading;
@@ -938,7 +942,6 @@ class PDFObject
                         $command[self::COMMAND] = [$command];
                         // no break
                     case 'TJ':
-                        // Check the marked content stack for flags
                         $actual_text = false;
                         $reverse_text = false;
                         foreach ($marked_stack as $marked) {
@@ -950,11 +953,7 @@ class PDFObject
                             }
                         }
 
-                        // Account for text position ONLY just before we write text
                         if (false === $actual_text && \is_array($last_written_position)) {
-                            // If $last_written_position is an array, that
-                            // means we have stored text position coordinates
-                            // for placing an ActualText
                             $currentX = $last_written_position[0];
                             $currentY = $last_written_position[1];
                             $last_written_position = false;
@@ -978,11 +977,6 @@ class PDFObject
                                     $curX = $currentX - $current_position['x'];
                                 }
 
-                                // In abs($factorX * 7) below, the 7 is chosen arbitrarily
-                                // as the number of apparent "spaces" in a document we
-                                // would need before considering them a "tab". In the
-                                // future, we might offer this value to users as a config
-                                // option.
                                 if ($curX >= abs($factorX * 7)) {
                                     $whiteSpace = "\t";
                                 } elseif ($curX >= abs($factorX * 2)) {
@@ -998,35 +992,30 @@ class PDFObject
                             $factorX
                         );
 
-                        // If there is no ActualText pending then write
                         if (false === $actual_text) {
                             $newtext = str_replace(["\r", "\n"], '', $newtext);
                             if (false !== $reverse_text) {
-                                // If we are in ReversedChars mode, add the whitespace last
                                 $text[] = preg_replace('/  $/', ' ', $newtext.$whiteSpace);
                             } else {
-                                // Otherwise add the whitespace first
                                 if (' ' === $whiteSpace && isset($text[\count($text) - 1])) {
-                                    $text[\count($text) - 1] = preg_replace('/ $/', '', $text[\count($text) - 1]);
+                                    $lastIdx = \count($text) - 1;
+                                    if ('' !== $text[$lastIdx] && ' ' === $text[$lastIdx][-1]) {
+                                        $text[$lastIdx] = substr($text[$lastIdx], 0, -1);
+                                    }
                                 }
-                                $text[] = preg_replace('/^[ \t]{2}/', ' ', $whiteSpace.$newtext);
+                                $combined = $whiteSpace.$newtext;
+                                if (\strlen($combined) >= 2 && (' ' === $combined[0] || "\t" === $combined[0]) && (' ' === $combined[1] || "\t" === $combined[1])) {
+                                    $combined = ' '.substr($combined, 2);
+                                }
+                                $text[] = $combined;
                             }
 
-                            // Record the position of this inserted text for comparison
-                            // with the next text block.
-                            // Provide a 'fudge' factor guess on how wide this text block
-                            // is based on the number of characters. This helps limit the
-                            // number of tabs inserted, but isn't perfect.
                             $factor = $factorX / 2;
                             $current_position = [
                                 'x' => $currentX - mb_strlen($newtext) * $factor,
                                 'y' => $currentY,
                             ];
                         } elseif (false === $last_written_position) {
-                            // If there is an ActualText in the pipeline
-                            // store the position this undisplayed text
-                            // *would* have been written to, so the
-                            // ActualText is displayed in the right spot
                             $last_written_position = [$currentX, $currentY];
                             $current_position['x'] = $currentX;
                         }
@@ -1039,19 +1028,13 @@ class PDFObject
                         $current_position_td['y'] += $current_text_leading;
                         break;
 
-                        // set character spacing
-                    case 'Tc':
-                        break;
-
                         // move text current point and set leading
                     case 'Td':
                     case 'TD':
-                        // move text current point
-                        $args = preg_split('/\s+/s', $command[self::COMMAND]);
-                        $y = (float) array_pop($args);
-                        $x = (float) array_pop($args);
+                        $x = $command['x'];
+                        $y = $command['y'];
 
-                        if ('TD' == $command[self::OPERATOR]) {
+                        if ('TD' === $command['o']) {
                             $current_text_leading = -$y * $current_position_tm['b'] - $y * $current_position_tm['j'];
                         }
 
@@ -1062,63 +1045,239 @@ class PDFObject
                         break;
 
                     case 'Tf':
-                        $args = preg_split('/\s/s', $command[self::COMMAND]);
-                        $size = (float) array_pop($args);
-                        $id = trim(array_pop($args), '/');
                         if (null !== $page) {
-                            $new_font = $page->getFont($id);
-                            // If an invalid font ID is given, do not update the font.
-                            // This should theoretically never happen, as the PDF spec states for the Tf operator:
-                            // "The specified font value shall match a resource name in the Font entry of the default resource dictionary"
-                            // (https://www.adobe.com/content/dam/acom/en/devnet/pdf/pdfs/PDF32000_2008.pdf, page 435)
-                            // But we want to make sure that malformed PDFs do not simply crash.
+                            $new_font = $page->getFont($command['font']);
                             if (null !== $new_font) {
                                 $current_font = $new_font;
-                                $current_font_size = $size;
+                                $current_font_size = $command['size'];
                             }
                         }
                         break;
 
                         // set leading
                     case 'TL':
-                        $y = (float) $command[self::COMMAND];
+                        $y = $command['v'];
                         $current_text_leading = -$y * $current_position_tm['b'] + -$y * $current_position_tm['j'];
                         break;
 
                         // set text position matrix
                     case 'Tm':
-                        $args = preg_split('/\s+/s', $command[self::COMMAND]);
+                        $args = $command['args'];
                         $current_position_tm = [
-                            'a' => (float) $args[0], 'b' => (float) $args[1], 'c' => 0,
-                            'i' => (float) $args[2], 'j' => (float) $args[3], 'k' => 0,
-                            'x' => (float) $args[4], 'y' => (float) $args[5], 'z' => 1,
+                            'a' => $args[0], 'b' => $args[1], 'c' => 0,
+                            'i' => $args[2], 'j' => $args[3], 'k' => 0,
+                            'x' => $args[4], 'y' => $args[5], 'z' => 1,
                         ];
-                        break;
-
-                        // set text rendering mode
-                    case 'Ts':
-                        break;
-
-                        // set super/subscripting text rise
-                    case 'Ts':
-                        break;
-
-                        // set word spacing
-                    case 'Tw':
-                        break;
-
-                        // set horizontal scaling
-                    case 'Tz':
                         break;
 
                     default:
                 }
             }
+        } finally {
+            unset(self::$recursionStack[$uniqueId]);
         }
 
         $result = array_merge($result, $text);
 
         return $result;
+    }
+
+    /**
+     * Single-pass extraction of text chunks paired with their 6-element transformation matrix (Tm)
+     * and optional font info (fontId, fontSize). Avoids the legacy 3-pass getDataTm pipeline
+     * (extractRawData -> extractDecodedRawData -> getDataCommands + getTextArray).
+     *
+     * @internal
+     */
+    public function extractDataTm(?Page $page = null): array
+    {
+        $content = $this->getContent();
+        $commands = ContentStreamLexer::lexForText($content);
+        if ([] === $commands) {
+            return [];
+        }
+
+        $defaultTm = ['1', '0', '0', '1', '0', '0'];
+        $concatTm = ['1', '0', '0', '1', '0', '0'];
+        $graphicsStatesStack = [];
+        $fontStack = [];
+
+        $Tm = $defaultTm;
+        $Tl = 0.0;
+        $Tx = 0.0;
+        $Ty = 0.0;
+
+        $currentFont = $this->getDefaultFont($page);
+        $fontId = -1;
+        $fontSize = 1;
+        $includeFontInfo = null !== $this->config && $this->config->getDataTmFontInfoHasToBeIncluded();
+
+        $markedStack = [];
+        $extractedData = [];
+
+        foreach ($commands as $command) {
+            switch ($command['o']) {
+                case 'BT':
+                    $Tm = $defaultTm;
+                    $Tl = 0.0;
+                    $Tx = 0.0;
+                    $Ty = 0.0;
+                    break;
+
+                case 'cm':
+                    $newConcatTm = $command['args'];
+                    $tempMatrix = [];
+                    $tempMatrix[0] = (float) $concatTm[0] * $newConcatTm[0] + (float) $concatTm[1] * $newConcatTm[2];
+                    $tempMatrix[1] = (float) $concatTm[0] * $newConcatTm[1] + (float) $concatTm[1] * $newConcatTm[3];
+                    $tempMatrix[2] = (float) $concatTm[2] * $newConcatTm[0] + (float) $concatTm[3] * $newConcatTm[2];
+                    $tempMatrix[3] = (float) $concatTm[2] * $newConcatTm[1] + (float) $concatTm[3] * $newConcatTm[3];
+                    $tempMatrix[4] = (float) $concatTm[4] * $newConcatTm[0] + (float) $concatTm[5] * $newConcatTm[2] + $newConcatTm[4];
+                    $tempMatrix[5] = (float) $concatTm[4] * $newConcatTm[1] + (float) $concatTm[5] * $newConcatTm[3] + $newConcatTm[5];
+                    $concatTm = $tempMatrix;
+                    break;
+
+                case 'TL':
+                    $Tl = $command['v'] * (float) $Tm[3];
+                    break;
+
+                case 'Td':
+                    $Tx += $command['x'] * (float) $Tm[0];
+                    $Ty += $command['y'] * (float) $Tm[3];
+                    $Tm[4] = (string) $Tx;
+                    $Tm[5] = (string) $Ty;
+                    break;
+
+                case 'TD':
+                    $Tl = -($command['y'] * (float) $Tm[3]);
+                    $Tx += $command['x'] * (float) $Tm[0];
+                    $Ty += $command['y'] * (float) $Tm[3];
+                    $Tm[4] = (string) $Tx;
+                    $Tm[5] = (string) $Ty;
+                    break;
+
+                case 'Tm':
+                    $rawTm = $command['args'];
+                    $tempMatrix = [];
+                    $tempMatrix[0] = $rawTm[0] * (float) $concatTm[0] + $rawTm[1] * (float) $concatTm[2];
+                    $tempMatrix[1] = $rawTm[0] * (float) $concatTm[1] + $rawTm[1] * (float) $concatTm[3];
+                    $tempMatrix[2] = $rawTm[2] * (float) $concatTm[0] + $rawTm[3] * (float) $concatTm[2];
+                    $tempMatrix[3] = $rawTm[2] * (float) $concatTm[1] + $rawTm[3] * (float) $concatTm[3];
+                    $tempMatrix[4] = $rawTm[4] * (float) $concatTm[0] + $rawTm[5] * (float) $concatTm[2] + (float) $concatTm[4];
+                    $tempMatrix[5] = $rawTm[4] * (float) $concatTm[1] + $rawTm[5] * (float) $concatTm[3] + (float) $concatTm[5];
+                    $Tm = $tempMatrix;
+                    $Tx = (float) $Tm[4];
+                    $Ty = (float) $Tm[5];
+                    break;
+
+                case 'T*':
+                    $Ty -= $Tl;
+                    $Tm[5] = (string) $Ty;
+                    break;
+
+                case 'Tf':
+                    $fontId = $command['font'];
+                    $fontSize = $command['size'];
+                    if (null !== $page) {
+                        $newFont = $page->getFont($fontId);
+                        if (null !== $newFont) {
+                            $currentFont = $newFont;
+                        }
+                    }
+                    break;
+
+                case 'q':
+                    $graphicsStatesStack[] = $concatTm;
+                    $fontStack[] = [$currentFont, $fontId, $fontSize];
+                    break;
+
+                case 'Q':
+                    if (!empty($graphicsStatesStack)) {
+                        $concatTm = array_pop($graphicsStatesStack);
+                    }
+                    if (!empty($fontStack)) {
+                        list($currentFont, $fontId, $fontSize) = array_pop($fontStack);
+                    }
+                    break;
+
+                case 'BDC':
+                    if (isset($command['dict']) && \is_string($command['dict'])) {
+                        $dict = $this->parseDictionary($command['dict']);
+                        if (isset($dict['ActualText']) && \is_string($dict['ActualText']) && '' !== $dict['ActualText']) {
+                            if ('[' === $dict['ActualText'][0]) {
+                                $markedStack[] = [
+                                    'ActualText' => [
+                                        'o' => 'TJ',
+                                        'c' => ContentStreamLexer::parseTjArray(trim($dict['ActualText'], '[]')),
+                                    ],
+                                ];
+                            } elseif ('<' === $dict['ActualText'][0] || '(' === $dict['ActualText'][0]) {
+                                $atCmds = $this->getCommandsText($dict['ActualText'].'Tj');
+                                if (isset($atCmds[0])) {
+                                    $markedStack[] = ['ActualText' => $atCmds[0]];
+                                }
+                            }
+                        }
+                    }
+                    break;
+
+                case 'EMC':
+                    if (!empty($markedStack)) {
+                        $marked = array_pop($markedStack);
+                        if (isset($marked['ActualText'])) {
+                            $command = $marked['ActualText'];
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                    if ('Tj' !== $command['o'] && 'TJ' !== $command['o']) {
+                        break;
+                    }
+                    // no break
+                case "'":
+                case '"':
+                    if ("'" === $command['o'] || '"' === $command['o']) {
+                        $Ty -= $Tl;
+                        $Tm[5] = (string) $Ty;
+                    }
+                    // no break
+                case 'Tj':
+                    $command[self::COMMAND] = [$command];
+                    // no break
+                case 'TJ':
+                    $hasPendingActualText = false;
+                    foreach ($markedStack as $m) {
+                        if (isset($m['ActualText'])) {
+                            $hasPendingActualText = true;
+                            break;
+                        }
+                    }
+                    if ($hasPendingActualText) {
+                        break;
+                    }
+
+                    $factorX = -(float) $fontSize * (float) $Tm[0] - (float) $fontSize * (float) $Tm[2];
+                    $decoded = $this->getTJUsingFontFallback($currentFont, $command[self::COMMAND], $page, $factorX);
+                    $decoded = str_replace(["\r", "\n"], '', $decoded);
+                    if (\strlen($decoded) >= 2 && (' ' === $decoded[0] || "\t" === $decoded[0]) && (' ' === $decoded[1] || "\t" === $decoded[1])) {
+                        $decoded = ' '.substr($decoded, 2);
+                    }
+
+                    $entry = [$Tm, $decoded];
+                    if ($includeFontInfo && ('Tj' === $command['o'] || 'TJ' === $command['o'])) {
+                        $entry[] = $fontId;
+                        $entry[] = $fontSize;
+                    }
+                    $extractedData[] = $entry;
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
+        return $extractedData;
     }
 
     /**
@@ -1148,48 +1307,7 @@ class PDFObject
         $command = trim($matches[1]);
 
         if ('TJ' == $operator) {
-            $subcommand = [];
-            $command = trim($command, '[]');
-            do {
-                $oldCommand = $command;
-
-                // Search for parentheses string () format
-                if (preg_match('/^ *\((.*?)(?<![^\\\\]\\\\)\) *(-?[\d.]+)?/', $command, $tjmatch)) {
-                    $subcommand[] = [
-                        self::TYPE => '(',
-                        self::OPERATOR => 'TJ',
-                        self::COMMAND => $tjmatch[1],
-                    ];
-                    if (isset($tjmatch[2]) && trim($tjmatch[2])) {
-                        $subcommand[] = [
-                            self::TYPE => 'n',
-                            self::OPERATOR => '',
-                            self::COMMAND => $tjmatch[2],
-                        ];
-                    }
-                    $command = substr($command, \strlen($tjmatch[0]));
-                }
-
-                // Search for hexadecimal <> format
-                if (preg_match('/^ *<([0-9a-f\s]*)> *(-?[\d.]+)?/i', $command, $tjmatch)) {
-                    $tjmatch[1] = preg_replace('/\s/', '', $tjmatch[1]);
-                    $subcommand[] = [
-                        self::TYPE => '<',
-                        self::OPERATOR => 'TJ',
-                        self::COMMAND => $tjmatch[1],
-                    ];
-                    if (isset($tjmatch[2]) && trim($tjmatch[2])) {
-                        $subcommand[] = [
-                            self::TYPE => 'n',
-                            self::OPERATOR => '',
-                            self::COMMAND => $tjmatch[2],
-                        ];
-                    }
-                    $command = substr($command, \strlen($tjmatch[0]));
-                }
-            } while ($command != $oldCommand);
-
-            $command = $subcommand;
+            $command = ContentStreamLexer::parseTjArray(trim($command, '[]'));
         } elseif ('Tj' == $operator || "'" == $operator || '"' == $operator) {
             // Depending on the string type, trim the data of the
             // appropriate delimiters
@@ -1226,7 +1344,9 @@ class PDFObject
             case 'XObject':
                 switch ($header->get('Subtype')->getContent()) {
                     case 'Image':
-                        return new Image($document, $header, $config->getRetainImageContent() ? $content : null, $config);
+                        $retainImage = null === $config || $config->getRetainImageContent();
+
+                        return new Image($document, $header, $retainImage ? $content : null, $config);
 
                     case 'Form':
                         return new Form($document, $header, $content, $config);
@@ -1254,6 +1374,19 @@ class PDFObject
                 return new Font($document, $header, $content, $config);
 
             default:
+                // ISO 32000-1:2008, Tables 89 & 95: /Type /XObject is optional on Form and Image XObjects
+                if (!$header->has('Type')) {
+                    switch ($header->get('Subtype')->getContent()) {
+                        case 'Image':
+                            $retainImage = null === $config || $config->getRetainImageContent();
+
+                            return new Image($document, $header, $retainImage ? $content : null, $config);
+
+                        case 'Form':
+                            return new Form($document, $header, $content, $config);
+                    }
+                }
+
                 return new self($document, $header, $content, $config);
         }
     }

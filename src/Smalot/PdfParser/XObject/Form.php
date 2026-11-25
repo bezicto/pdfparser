@@ -41,11 +41,41 @@ use Smalot\PdfParser\PDFObject;
  */
 class Form extends Page
 {
+    /**
+     * Memoized extracted text keyed by resource context.
+     *
+     * @var array<string, string>
+     */
+    private $textCache = [];
+
     public function getText(?Page $page = null): string
     {
-        $header = new Header([], $this->document);
-        $contents = new PDFObject($this->document, $header, $this->content, $this->config);
+        $content = $this->getContent();
+        if (null === $content || '' === $content) {
+            return ' ';
+        }
 
-        return $contents->getText($this);
+        $uniqueId = $this->getUniqueId();
+        if (isset(PDFObject::$recursionStack[$uniqueId])) {
+            return ' ';
+        }
+
+        $hasOwnResources = $this->has('Resources');
+        $resourceOwner = ($hasOwnResources || null === $page) ? $this : $page;
+        $cacheKey = $hasOwnResources ? 'self' : (null !== $page ? spl_object_hash($page) : 'null');
+
+        if (isset($this->textCache[$cacheKey])) {
+            return $this->textCache[$cacheKey];
+        }
+
+        PDFObject::$recursionStack[$uniqueId] = true;
+        try {
+            $header = new Header([], $this->document);
+            $contents = new PDFObject($this->document, $header, $content, $this->config);
+
+            return $this->textCache[$cacheKey] = $contents->getText($resourceOwner);
+        } finally {
+            unset(PDFObject::$recursionStack[$uniqueId]);
+        }
     }
 }

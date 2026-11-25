@@ -75,6 +75,22 @@ class RawDataParser
     protected $objects;
 
     /**
+     * Whether getIndirectObject() should wrap non-structural streams in LazyStream
+     * for on-demand decompression.
+     *
+     * @var bool
+     */
+    private $lazyStreams = false;
+
+    /**
+     * Object numbers explicitly marked free ('f' / type 0) in a newer xref revision,
+     * so older /Prev xref tables cannot resurrect deleted objects.
+     *
+     * @var array<int, bool>
+     */
+    protected $freedObjects = [];
+
+    /**
      * @param array $cfg Configuration array, default is []
      */
     public function __construct($cfg = [], ?Config $config = null)
@@ -99,51 +115,25 @@ class RawDataParser
      */
     protected function decodeStream(string $pdfData, array $xref, array $sdic, string $stream): array
     {
-        // get stream length and filters
-        $slength = \strlen($stream);
-        if ($slength <= 0) {
+        list($stream, $filters, $decodeParmsList) = $this->prepareStreamDecode($pdfData, $xref, $sdic, $stream);
+        if ('' === $stream) {
             return ['', []];
-        }
-        $filters = [];
-        foreach ($sdic as $k => $v) {
-            if ('/' == $v[0]) {
-                if (('Length' == $v[1]) && (isset($sdic[$k + 1])) && ('numeric' == $sdic[$k + 1][0])) {
-                    // get declared stream length
-                    $declength = (int) $sdic[$k + 1][1];
-                    if ($declength < $slength) {
-                        $stream = substr($stream, 0, $declength);
-                        $slength = $declength;
-                    }
-                } elseif (('Filter' == $v[1]) && (isset($sdic[$k + 1]))) {
-                    // resolve indirect object
-                    $objval = $this->getObjectVal($pdfData, $xref, $sdic[$k + 1]);
-                    if ('/' == $objval[0]) {
-                        // single filter
-                        $filters[] = $objval[1];
-                    } elseif ('[' == $objval[0]) {
-                        // array of filters
-                        foreach ($objval[1] as $flt) {
-                            if ('/' == $flt[0]) {
-                                $filters[] = $flt[1];
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         // decode the stream
         $remaining_filters = [];
-        foreach ($filters as $filter) {
-            if (\in_array($filter, $this->filterHelper->getAvailableFilters(), true)) {
+        $availableFilters = $this->filterHelper->getAvailableFilters();
+        foreach ($filters as $idx => $filter) {
+            if (\in_array($filter, $availableFilters, true)) {
+                $parms = $decodeParmsList[$idx] ?? [];
                 try {
-                    $stream = $this->filterHelper->decodeFilter($filter, $stream, $this->config->getDecodeMemoryLimit());
+                    $stream = $this->filterHelper->decodeFilter($filter, $stream, $this->config->getDecodeMemoryLimit(), $parms);
                 } catch (\Exception $e) {
                     $emsg = $e->getMessage();
-                    if ((('~' == $emsg[0]) && !$this->cfg['ignore_missing_filter_decoders'])
-                        || (('~' != $emsg[0]) && !$this->cfg['ignore_filter_decoding_errors'])
+                    if ((('~' == ($emsg[0] ?? '')) && !$this->cfg['ignore_missing_filter_decoders'])
+                        || (('~' != ($emsg[0] ?? '')) && !$this->cfg['ignore_filter_decoding_errors'])
                     ) {
-                        throw new \Exception($e->getMessage());
+                        throw new \Exception($emsg);
                     }
                 }
             } else {
@@ -153,6 +143,147 @@ class RawDataParser
         }
 
         return [$stream, $remaining_filters];
+    }
+
+    /**
+     * Prepare a lazy stream handle (or return uncompressed bytes directly if no supported filters apply).
+     *
+     * @return array{0: string|LazyStream, 1: array<int, string>}
+     */
+    protected function buildLazyStream(string $pdfData, array $xref, array $sdic, string $stream): array
+    {
+        list($stream, $filters, $decodeParmsList) = $this->prepareStreamDecode($pdfData, $xref, $sdic, $stream);
+        if ('' === $stream) {
+            return ['', []];
+        }
+
+        $availableFilters = $this->filterHelper->getAvailableFilters();
+        $hasSupportedFilter = false;
+        $remainingFilters = [];
+        foreach ($filters as $filter) {
+            if (\in_array($filter, $availableFilters, true)) {
+                $hasSupportedFilter = true;
+            } else {
+                $remainingFilters[] = $filter;
+            }
+        }
+
+        if (!$hasSupportedFilter) {
+            return [$stream, $remainingFilters];
+        }
+
+        $lazy = new LazyStream(
+            $stream,
+            $filters,
+            $decodeParmsList,
+            $this->filterHelper,
+            $this->config->getDecodeMemoryLimit(),
+            (bool) $this->cfg['ignore_filter_decoding_errors'],
+            (bool) $this->cfg['ignore_missing_filter_decoders']
+        );
+
+        return [$lazy, $remainingFilters];
+    }
+
+    /**
+     * Trim raw stream by declared /Length and extract /Filter list and /DecodeParms list.
+     *
+     * @return array{0: string, 1: array<int, string>, 2: array<int, array<string, int>>}
+     */
+    private function prepareStreamDecode(string $pdfData, array $xref, array $sdic, string $stream): array
+    {
+        $slength = \strlen($stream);
+        if ($slength <= 0) {
+            return ['', [], []];
+        }
+        $filters = [];
+        $decodeParmsList = [];
+        foreach ($sdic as $k => $v) {
+            if ('/' == $v[0]) {
+                if (('Length' == $v[1]) && isset($sdic[$k + 1])) {
+                    $lenVal = $this->getObjectVal($pdfData, $xref, $sdic[$k + 1]);
+                    if (\is_array($lenVal) && isset($lenVal[0])) {
+                        if (\is_array($lenVal[0]) && isset($lenVal[0][0]) && 'numeric' === $lenVal[0][0]) {
+                            $lenVal = $lenVal[0];
+                        }
+                        if ('numeric' === $lenVal[0]) {
+                            $declength = (int) $lenVal[1];
+                            if ($declength >= 0 && $declength < $slength) {
+                                $stream = substr($stream, 0, $declength);
+                                $slength = $declength;
+                            }
+                        }
+                    }
+                } elseif (('Filter' == $v[1]) && isset($sdic[$k + 1])) {
+                    $objval = $this->resolveRawValue($pdfData, $xref, $sdic[$k + 1]);
+                    if ('/' == $objval[0]) {
+                        $filters[] = $objval[1];
+                    } elseif ('[' == $objval[0]) {
+                        foreach ($objval[1] as $flt) {
+                            $flt = $this->resolveRawValue($pdfData, $xref, $flt);
+                            if ('/' == $flt[0]) {
+                                $filters[] = $flt[1];
+                            }
+                        }
+                    }
+                } elseif (('DecodeParms' == $v[1]) && isset($sdic[$k + 1])) {
+                    $dpVal = $this->resolveRawValue($pdfData, $xref, $sdic[$k + 1]);
+                    if ('<<' === $dpVal[0] && \is_array($dpVal[1])) {
+                        $decodeParmsList = [$this->extractDecodeParms($pdfData, $xref, $dpVal[1])];
+                    } elseif ('[' === $dpVal[0] && \is_array($dpVal[1])) {
+                        foreach ($dpVal[1] as $item) {
+                            $item = $this->resolveRawValue($pdfData, $xref, $item);
+                            if ('<<' === $item[0] && \is_array($item[1])) {
+                                $decodeParmsList[] = $this->extractDecodeParms($pdfData, $xref, $item[1]);
+                            } else {
+                                $decodeParmsList[] = [];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return [$stream, $filters, $decodeParmsList];
+    }
+
+    /**
+     * Resolve an indirect raw object reference and unwrap single-element indirect wrappers.
+     */
+    private function resolveRawValue(string $pdfData, array $xref, array $obj): array
+    {
+        $resolved = $this->getObjectVal($pdfData, $xref, $obj);
+        if (isset($resolved[0]) && \is_array($resolved[0])) {
+            return $resolved[0];
+        }
+
+        return $resolved;
+    }
+
+    /**
+     * Extract numeric filter decode parameters (Predictor, Columns, Colors, BitsPerComponent, EarlyChange)
+     * from a raw dictionary token list.
+     *
+     * @return array<string, int>
+     */
+    private function extractDecodeParms(string $pdfData, array $xref, array $rawDict): array
+    {
+        $parms = [];
+        $count = \count($rawDict);
+        for ($i = 0; $i + 1 < $count; ++$i) {
+            if ('/' !== $rawDict[$i][0]) {
+                continue;
+            }
+            $key = $rawDict[$i][1];
+            if ('Predictor' === $key || 'Columns' === $key || 'Colors' === $key || 'BitsPerComponent' === $key || 'EarlyChange' === $key) {
+                $val = $this->resolveRawValue($pdfData, $xref, $rawDict[$i + 1]);
+                if ('numeric' === ($val[0] ?? null)) {
+                    $parms[$key] = (int) $val[1];
+                }
+            }
+        }
+
+        return $parms;
     }
 
     /**
@@ -184,21 +315,66 @@ class RawDataParser
             if ('n' == $matches[3][0]) {
                 // create unique object index: [object number]_[generation number]
                 $index = $obj_num.'_'.(int) $matches[2][0];
-                // check if object already exist
-                if (!isset($xref['xref'][$index])) {
+                // check if object already exists or was freed in a newer revision
+                if (!isset($xref['xref'][$index]) && !isset($this->freedObjects[$obj_num])) {
                     // store object offset position
                     $xref['xref'][$index] = (int) $matches[1][0];
                 }
                 ++$obj_num;
             } elseif ('f' == $matches[3][0]) {
+                $this->freedObjects[$obj_num] = true;
                 ++$obj_num;
             } else {
                 // object number (index)
                 $obj_num = (int) $matches[1][0];
             }
         }
-        // get trailer data
-        if (preg_match('/trailer[\s]*<<(.*)>>/isU', $pdfData, $matches, \PREG_OFFSET_CAPTURE, $offset) > 0) {
+        // get trailer data (parse via getRawObject to support nested dictionaries, with regex fallback)
+        $trailerParsed = false;
+        $prevOffset = 0;
+        if (preg_match('/trailer[\s]*/i', $pdfData, $tMatch, \PREG_OFFSET_CAPTURE, $offset) > 0) {
+            $dictStart = $tMatch[0][1] + \strlen($tMatch[0][0]);
+            if (isset($pdfData[$dictStart + 1]) && '<' === $pdfData[$dictStart] && '<' === $pdfData[$dictStart + 1]) {
+                $trailerObj = $this->getRawObject($pdfData, $dictStart);
+                if ('<<' === $trailerObj[0] && \is_array($trailerObj[1])) {
+                    $trailerParsed = true;
+                    $fillTrailer = !isset($xref['trailer']) || empty($xref['trailer']);
+                    if ($fillTrailer) {
+                        $xref['trailer'] = [];
+                    }
+                    $tArr = $trailerObj[1];
+                    $tCount = \count($tArr);
+                    for ($ti = 0; $ti + 1 < $tCount; ++$ti) {
+                        if ('/' !== $tArr[$ti][0]) {
+                            continue;
+                        }
+                        $tKey = strtolower($tArr[$ti][1]);
+                        $tVal = $tArr[$ti + 1];
+                        if ('prev' === $tKey && 'numeric' === $tVal[0]) {
+                            $prevOffset = (int) $tVal[1];
+                        } elseif ($fillTrailer) {
+                            if ('size' === $tKey && 'numeric' === $tVal[0]) {
+                                $xref['trailer']['size'] = (int) $tVal[1];
+                            } elseif ('root' === $tKey && 'objref' === $tVal[0]) {
+                                $xref['trailer']['root'] = $tVal[1];
+                            } elseif ('encrypt' === $tKey && ('objref' === $tVal[0] || '<<' === $tVal[0])) {
+                                $xref['trailer']['encrypt'] = 'objref' === $tVal[0] ? $tVal[1] : 'inline';
+                            } elseif ('info' === $tKey && 'objref' === $tVal[0]) {
+                                $xref['trailer']['info'] = $tVal[1];
+                            } elseif ('id' === $tKey && '[' === $tVal[0] && isset($tVal[1][0][1], $tVal[1][1][1])) {
+                                $xref['trailer']['id'] = [$tVal[1][0][1], $tVal[1][1][1]];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if ($trailerParsed) {
+            if (0 !== $prevOffset) {
+                $xref = $this->getXrefData($pdfData, $prevOffset, $xref, $visitedOffsets);
+            }
+        } elseif (preg_match('/trailer[\s]*<<(.*)>>/isU', $pdfData, $matches, \PREG_OFFSET_CAPTURE, $offset) > 0) {
             $trailer_data = $matches[1][0];
             if (!isset($xref['trailer']) || empty($xref['trailer'])) {
                 // get only the last updated version
@@ -264,14 +440,9 @@ class RawDataParser
             $xref['xref'] = [];
         }
         $valid_crs = false;
-        $columns = 0;
-        $predictor = null;
-        $sarr = $xrefcrs[0][1];
-        if (!\is_array($sarr)) {
-            $sarr = [];
-        }
-
-        $wb = [];
+        $sarr = isset($xrefcrs[0][1]) && \is_array($xrefcrs[0][1]) ? $xrefcrs[0][1] : [];
+        $wb = [0, 0, 0];
+        $index_blocks = [];
 
         foreach ($sarr as $k => $v) {
             if (
@@ -284,43 +455,22 @@ class RawDataParser
                 )
             ) {
                 $valid_crs = true;
-            } elseif (('/' == $v[0]) && ('Index' == $v[1]) && (isset($sarr[$k + 1]))) {
+            } elseif (('/' == $v[0]) && ('Index' == $v[1]) && isset($sarr[$k + 1]) && \is_array($sarr[$k + 1][1])) {
                 // initialize list for: first object number in the subsection / number of objects
                 $index_blocks = [];
-                for ($m = 0; $m < \count($sarr[$k + 1][1]); $m += 2) {
-                    $index_blocks[] = [$sarr[$k + 1][1][$m][1], $sarr[$k + 1][1][$m + 1][1]];
+                $idxList = $sarr[$k + 1][1];
+                $idxCount = \count($idxList);
+                for ($m = 0; $m + 1 < $idxCount; $m += 2) {
+                    $index_blocks[] = [(int) $idxList[$m][1], (int) $idxList[$m + 1][1]];
                 }
             } elseif (('/' == $v[0]) && ('Prev' == $v[1]) && (isset($sarr[$k + 1]) && ('numeric' == $sarr[$k + 1][0]))) {
                 // get previous xref offset
                 $prevxref = (int) $sarr[$k + 1][1];
-            } elseif (('/' == $v[0]) && ('W' == $v[1]) && (isset($sarr[$k + 1]))) {
+            } elseif (('/' == $v[0]) && ('W' == $v[1]) && isset($sarr[$k + 1][1][0][1], $sarr[$k + 1][1][1][1], $sarr[$k + 1][1][2][1])) {
                 // number of bytes (in the decoded stream) of the corresponding field
                 $wb[0] = (int) $sarr[$k + 1][1][0][1];
                 $wb[1] = (int) $sarr[$k + 1][1][1][1];
                 $wb[2] = (int) $sarr[$k + 1][1][2][1];
-            } elseif (('/' == $v[0]) && ('DecodeParms' == $v[1]) && (isset($sarr[$k + 1][1]))) {
-                $decpar = $sarr[$k + 1][1];
-                foreach ($decpar as $kdc => $vdc) {
-                    if (
-                        '/' == $vdc[0]
-                        && 'Columns' == $vdc[1]
-                        && (
-                            isset($decpar[$kdc + 1])
-                            && 'numeric' == $decpar[$kdc + 1][0]
-                        )
-                    ) {
-                        $columns = (int) $decpar[$kdc + 1][1];
-                    } elseif (
-                        '/' == $vdc[0]
-                        && 'Predictor' == $vdc[1]
-                        && (
-                            isset($decpar[$kdc + 1])
-                            && 'numeric' == $decpar[$kdc + 1][0]
-                        )
-                    ) {
-                        $predictor = (int) $decpar[$kdc + 1][1];
-                    }
-                }
             } elseif ($filltrailer) {
                 if (('/' == $v[0]) && ('Size' == $v[1]) && (isset($sarr[$k + 1]) && ('numeric' == $sarr[$k + 1][0]))) {
                     $xref['trailer']['size'] = $sarr[$k + 1][1];
@@ -328,9 +478,9 @@ class RawDataParser
                     $xref['trailer']['root'] = $sarr[$k + 1][1];
                 } elseif (('/' == $v[0]) && ('Info' == $v[1]) && (isset($sarr[$k + 1]) && ('objref' == $sarr[$k + 1][0]))) {
                     $xref['trailer']['info'] = $sarr[$k + 1][1];
-                } elseif (('/' == $v[0]) && ('Encrypt' == $v[1]) && (isset($sarr[$k + 1]) && ('objref' == $sarr[$k + 1][0]))) {
-                    $xref['trailer']['encrypt'] = $sarr[$k + 1][1];
-                } elseif (('/' == $v[0]) && ('ID' == $v[1]) && (isset($sarr[$k + 1]))) {
+                } elseif (('/' == $v[0]) && ('Encrypt' == $v[1]) && isset($sarr[$k + 1]) && ('objref' == $sarr[$k + 1][0] || '<<' == $sarr[$k + 1][0])) {
+                    $xref['trailer']['encrypt'] = 'objref' == $sarr[$k + 1][0] ? $sarr[$k + 1][1] : 'inline';
+                } elseif (('/' == $v[0]) && ('ID' == $v[1]) && isset($sarr[$k + 1][1][0][1], $sarr[$k + 1][1][1][1])) {
                     $xref['trailer']['id'] = [];
                     $xref['trailer']['id'][0] = $sarr[$k + 1][1][0][1];
                     $xref['trailer']['id'][1] = $sarr[$k + 1][1][1][1];
@@ -338,171 +488,78 @@ class RawDataParser
             }
         }
 
-        // decode data
+        // Decode binary xref entries directly from the stream (decodeStream() already applied /Filter and /DecodeParms predictor)
         if ($valid_crs && isset($xrefcrs[1][3][0])) {
-            if (null !== $predictor) {
-                // number of bytes in a row
-                $rowlen = ($columns + 1);
-                // convert the stream into an array of integers
-                /** @var array<int> */
-                $sdata = unpack('C*', $xrefcrs[1][3][0]);
-                // TODO: Handle the case when unpack returns false
+            $streamBytes = $xrefcrs[1][3][0];
+            $streamLen = \strlen($streamBytes);
+            $wb0 = $wb[0];
+            $wb1 = $wb[1];
+            $wb2 = $wb[2];
+            $rowLen = $wb0 + $wb1 + $wb2;
 
-                // split the rows
-                $sdata = array_chunk($sdata, $rowlen);
+            if ($rowLen > 0 && $streamLen > 0) {
+                $blockIdx = 0;
+                $blockCount = \count($index_blocks);
+                $obj_num = $blockCount > 0 ? $index_blocks[0][0] : 0;
+                $blockRemaining = $blockCount > 0 ? $index_blocks[0][1] : -1;
 
-                // initialize decoded array
-                $ddata = [];
-                // initialize first row with zeros
-                $prev_row = array_fill(0, $rowlen, 0);
-                // for each row apply PNG unpredictor
-                foreach ($sdata as $k => $row) {
-                    // initialize new row
-                    $ddata[$k] = [];
-                    // get PNG predictor value
-                    $predictor = (10 + $row[0]);
-                    // for each byte on the row
-                    for ($i = 1; $i <= $columns; ++$i) {
-                        // new index
-                        $j = ($i - 1);
-                        $row_up = $prev_row[$j];
-                        if (1 == $i) {
-                            $row_left = 0;
-                            $row_upleft = 0;
-                        } else {
-                            $row_left = $row[$i - 1];
-                            $row_upleft = $prev_row[$j - 1];
-                        }
-                        switch ($predictor) {
-                            case 10:  // PNG prediction (on encoding, PNG None on all rows)
-                                $ddata[$k][$j] = $row[$i];
-                                break;
-
-                            case 11:  // PNG prediction (on encoding, PNG Sub on all rows)
-                                $ddata[$k][$j] = (($row[$i] + $row_left) & 0xFF);
-                                break;
-
-                            case 12:  // PNG prediction (on encoding, PNG Up on all rows)
-                                $ddata[$k][$j] = (($row[$i] + $row_up) & 0xFF);
-                                break;
-
-                            case 13:  // PNG prediction (on encoding, PNG Average on all rows)
-                                $ddata[$k][$j] = (($row[$i] + (($row_left + $row_up) / 2)) & 0xFF);
-                                break;
-
-                            case 14:  // PNG prediction (on encoding, PNG Paeth on all rows)
-                                // initial estimate
-                                $p = ($row_left + $row_up - $row_upleft);
-                                // distances
-                                $pa = abs($p - $row_left);
-                                $pb = abs($p - $row_up);
-                                $pc = abs($p - $row_upleft);
-                                $pmin = min($pa, $pb, $pc);
-                                // return minimum distance
-                                switch ($pmin) {
-                                    case $pa:
-                                        $ddata[$k][$j] = (($row[$i] + $row_left) & 0xFF);
-                                        break;
-
-                                    case $pb:
-                                        $ddata[$k][$j] = (($row[$i] + $row_up) & 0xFF);
-                                        break;
-
-                                    case $pc:
-                                        $ddata[$k][$j] = (($row[$i] + $row_upleft) & 0xFF);
-                                        break;
-                                }
-                                break;
-
-                            default:  // PNG prediction (on encoding, PNG optimum)
-                                throw new \Exception('Unknown PNG predictor: '.$predictor);
+                for ($pos = 0; $pos + $rowLen <= $streamLen; $pos += $rowLen) {
+                    // Column 0: entry type (defaults to 1 when W[0] == 0 per ISO 32000-1 Table 18)
+                    if (0 === $wb0) {
+                        $f0 = 1;
+                    } else {
+                        $f0 = 0;
+                        for ($b = 0; $b < $wb0; ++$b) {
+                            $f0 = ($f0 << 8) | \ord($streamBytes[$pos + $b]);
                         }
                     }
-                    $prev_row = $ddata[$k];
-                } // end for each row
-                // complete decoding
-            } else {
-                // number of bytes in a row
-                $rowlen = array_sum($wb);
-                if (0 < $rowlen) {
-                    // convert the stream into an array of integers
-                    $sdata = unpack('C*', $xrefcrs[1][3][0]);
-                    // split the rows
-                    $ddata = array_chunk($sdata, $rowlen);
-                } else {
-                    // if the row length is zero, $ddata should be an empty array as well
-                    $ddata = [];
-                }
-            }
 
-            $sdata = [];
-
-            // for every row
-            foreach ($ddata as $k => $row) {
-                // initialize new row
-                $sdata[$k] = [0, 0, 0];
-                if (0 == $wb[0]) {
-                    // default type field
-                    $sdata[$k][0] = 1;
-                }
-                $i = 0; // count bytes in the row
-                // for every column
-                for ($c = 0; $c < 3; ++$c) {
-                    // for every byte on the column
-                    for ($b = 0; $b < $wb[$c]; ++$b) {
-                        if (isset($row[$i])) {
-                            $sdata[$k][$c] += ($row[$i] << (($wb[$c] - 1 - $b) * 8));
-                        }
-                        ++$i;
+                    // Column 1: byte offset or object stream number
+                    $f1 = 0;
+                    $c1Pos = $pos + $wb0;
+                    for ($b = 0; $b < $wb1; ++$b) {
+                        $f1 = ($f1 << 8) | \ord($streamBytes[$c1Pos + $b]);
                     }
-                }
-            }
 
-            // fill xref
-            if (isset($index_blocks)) {
-                // load the first object number of the first /Index entry
-                $obj_num = $index_blocks[0][0];
-            } else {
-                $obj_num = 0;
-            }
-            foreach ($sdata as $k => $row) {
-                switch ($row[0]) {
-                    case 0:  // (f) linked list of free objects
-                        break;
+                    // Column 2: generation number or index within object stream
+                    $f2 = 0;
+                    $c2Pos = $c1Pos + $wb1;
+                    for ($b = 0; $b < $wb2; ++$b) {
+                        $f2 = ($f2 << 8) | \ord($streamBytes[$c2Pos + $b]);
+                    }
 
-                    case 1:  // (n) objects that are in use but are not compressed
-                        // create unique object index: [object number]_[generation number]
-                        $index = $obj_num.'_'.$row[2];
-                        // check if object already exist
-                        if (!isset($xref['xref'][$index])) {
-                            // store object offset position
-                            $xref['xref'][$index] = $row[1];
-                        }
-                        break;
+                    switch ($f0) {
+                        case 0: // (f) free object
+                            $this->freedObjects[$obj_num] = true;
+                            break;
 
-                    case 2:  // compressed objects
-                        // $row[1] = object number of the object stream in which this object is stored
-                        // $row[2] = index of this object within the object stream
-                        $index = $row[1].'_0_'.$row[2];
-                        $xref['xref'][$index] = -1;
-                        break;
+                        case 1: // (n) uncompressed object in use
+                            $index = $obj_num.'_'.$f2;
+                            if (!isset($xref['xref'][$index]) && !isset($this->freedObjects[$obj_num])) {
+                                $xref['xref'][$index] = $f1;
+                            }
+                            break;
 
-                    default:  // null objects
-                        break;
-                }
-                ++$obj_num;
-                if (isset($index_blocks)) {
-                    // reduce the number of remaining objects
-                    --$index_blocks[0][1];
-                    if (0 == $index_blocks[0][1]) {
-                        // remove the actual used /Index entry
-                        array_shift($index_blocks);
-                        if (0 < \count($index_blocks)) {
-                            // load the first object number of the following /Index entry
-                            $obj_num = $index_blocks[0][0];
-                        } else {
-                            // if there are no more entries, remove $index_blocks to avoid actions on an empty array
-                            unset($index_blocks);
+                        case 2: // compressed object inside an ObjStm
+                            $index = $f1.'_0_'.$f2;
+                            $xref['xref'][$index] = -1;
+                            break;
+
+                        default:
+                            break;
+                    }
+
+                    ++$obj_num;
+                    if ($blockCount > 0) {
+                        --$blockRemaining;
+                        if ($blockRemaining <= 0) {
+                            ++$blockIdx;
+                            if ($blockIdx < $blockCount) {
+                                $obj_num = $index_blocks[$blockIdx][0];
+                                $blockRemaining = $index_blocks[$blockIdx][1];
+                            } else {
+                                $blockCount = 0;
+                            }
                         }
                     }
                 }
@@ -518,8 +575,10 @@ class RawDataParser
 
     protected function getObjectHeaderPattern(array $objRefs): string
     {
-        // consider all whitespace character (PDF specifications)
-        return '/'.$objRefs[0].$this->config->getPdfWhitespacesRegex().$objRefs[1].$this->config->getPdfWhitespacesRegex().'obj/';
+        // consider all whitespace characters (1 or more per PDF spec)
+        $ws = $this->config->getPdfWhitespacesRegex();
+
+        return '/\G'.$objRefs[0].$ws.'+'.$objRefs[1].$ws.'+obj/';
     }
 
     protected function getObjectHeaderLen(array $objRefs): int
@@ -552,16 +611,16 @@ class RawDataParser
             throw new \Exception('Invalid object reference for $obj.');
         }
 
-        $objHeaderLen = $this->getObjectHeaderLen($objRefArr);
-
         /*
          * check if we are in position
          */
         // ignore whitespace characters at offset
         $offset += strspn($pdfData, $this->config->getPdfWhitespaces(), $offset);
-        // ignore leading zeros for object number
-        $offset += strspn($pdfData, '0', $offset);
-        if (0 == preg_match($this->getObjectHeaderPattern($objRefArr), substr($pdfData, $offset, $objHeaderLen))) {
+        // ignore leading zeros for non-zero object number
+        if ('0' !== $objRefArr[0]) {
+            $offset += strspn($pdfData, '0', $offset);
+        }
+        if (1 !== preg_match($this->getObjectHeaderPattern($objRefArr), $pdfData, $hdrMatch, 0, $offset)) {
             // an indirect reference to an undefined object shall be considered a reference to the null object
             return ['null', 'null', $offset];
         }
@@ -570,7 +629,7 @@ class RawDataParser
          * get content
          */
         // starting position of object content
-        $offset += $objHeaderLen;
+        $offset += \strlen($hdrMatch[0]);
         $objContentArr = [];
         $i = 0; // object main index
         $header = null;
@@ -581,7 +640,14 @@ class RawDataParser
             $offset = $element[2];
             // decode stream using stream's dictionary information
             if ($decoding && ('stream' === $element[0]) && null != $header) {
-                $element[3] = $this->decodeStream($pdfData, $xref, $header[1], $element[1]);
+                $objType = $this->getHeaderValue($header[1], 'Type', '/');
+                if ($this->lazyStreams && 'ObjStm' !== $objType && 'XRef' !== $objType) {
+                    $element[3] = $this->buildLazyStream($pdfData, $xref, $header[1], $element[1]);
+                    // Release raw stream slot so compressed bytes aren't duplicated in the raw structure
+                    $element[1] = '';
+                } else {
+                    $element[3] = $this->decodeStream($pdfData, $xref, $header[1], $element[1]);
+                }
             }
             $objContentArr[$i] = $element;
             $header = isset($element[0]) && '<<' === $element[0] ? $element : null;
@@ -613,9 +679,9 @@ class RawDataParser
             if (isset($this->objects[$obj[1]])) {
                 // this object has been already parsed
                 return $this->objects[$obj[1]];
-            } elseif (isset($xref[$obj[1]])) {
+            } elseif (isset($xref['xref'][$obj[1]]) && $xref['xref'][$obj[1]] > 0) {
                 // parse new object
-                $this->objects[$obj[1]] = $this->getIndirectObject($pdfData, $xref, $obj[1], $xref[$obj[1]], false);
+                $this->objects[$obj[1]] = $this->getIndirectObject($pdfData, $xref, $obj[1], $xref['xref'][$obj[1]], false);
 
                 return $this->objects[$obj[1]];
             }
@@ -678,6 +744,10 @@ class RawDataParser
 
         // skip initial white space chars
         $offset += strspn($pdfData, $this->config->getPdfWhitespaces(), $offset);
+
+        if (!isset($pdfData[$offset])) {
+            return ['', '', $offset];
+        }
 
         // get first char
         $char = $pdfData[$offset];
@@ -835,24 +905,28 @@ class RawDataParser
                     // start stream object
                     $objtype = 'stream';
                     $offset += 6;
-                    if (1 == preg_match('/^( *[\r]?[\n])/isU', substr($pdfData, $offset, 4), $matches)) {
+                    if (1 == preg_match('/^( *(?:\r\n|\n|\r))/', substr($pdfData, $offset, 16), $matches)) {
                         $offset += \strlen($matches[0]);
 
-                        // we get stream length here to later help preg_match test less data
+                        // Use declared stream length when positive and within bounds to skip binary payload fast
+                        $pdfLen = \strlen($pdfData);
                         $streamLen = (int) $this->getHeaderValue($headerDic, 'Length', 'numeric', 0);
-                        $skip = false === $this->config->getRetainImageContent() && 'XObject' == $this->getHeaderValue($headerDic, 'Type', '/') && 'Image' == $this->getHeaderValue($headerDic, 'Subtype', '/');
+                        $skip = false === $this->config->getRetainImageContent()
+                            && 'Image' == $this->getHeaderValue($headerDic, 'Subtype', '/');
 
-                        $pregResult = preg_match(
-                            '/(endstream)[\x09\x0a\x0c\x0d\x20]/isU',
-                            $pdfData,
-                            $matches,
-                            \PREG_OFFSET_CAPTURE,
-                            $offset + $streamLen
-                        );
+                        $searchStart = ($streamLen > 0 && ($offset + $streamLen) <= $pdfLen)
+                            ? ($offset + $streamLen)
+                            : $offset;
 
-                        if (1 == $pregResult) {
-                            $objval = $skip ? '' : substr($pdfData, $offset, $matches[0][1] - $offset);
-                            $offset = $matches[1][1];
+                        $endPos = $this->findEndstreamPos($pdfData, $searchStart, $pdfLen);
+                        if (false === $endPos && $searchStart > $offset) {
+                            // Declared /Length was oversized or inaccurate; retry from actual stream start
+                            $endPos = $this->findEndstreamPos($pdfData, $offset, $pdfLen);
+                        }
+
+                        if (false !== $endPos) {
+                            $objval = $skip ? '' : substr($pdfData, $offset, $endPos - $offset);
+                            $offset = $endPos;
                         }
                     }
                 } elseif ('endstream' == substr($pdfData, $offset, 9)) {
@@ -879,6 +953,29 @@ class RawDataParser
         }
 
         return [$objtype, $objval, $offset];
+    }
+
+    /**
+     * Locate the byte offset of the 'endstream' delimiter at or after $searchStart using fast strpos().
+     *
+     * @return int|false
+     */
+    private function findEndstreamPos(string $pdfData, int $searchStart, int $pdfLen)
+    {
+        $pos = $searchStart;
+        while (false !== ($found = strpos($pdfData, 'endstream', $pos))) {
+            $after = $found + 9;
+            if (
+                $after >= $pdfLen
+                || false !== strpos("\x00\x09\x0a\x0c\x0d\x20", $pdfData[$after])
+                || 'endobj' === substr($pdfData, $after, 6)
+            ) {
+                return $found;
+            }
+            $pos = $found + 9;
+        }
+
+        return false;
     }
 
     /**
@@ -949,19 +1046,39 @@ class RawDataParser
         // forward until it isn't; affects loosely targetted offsets
         // for the 'xref' keyword
         // See: https://github.com/smalot/pdfparser/issues/673
-        $bumpOffset = $offset;
-        while (preg_match('/\s/', substr($pdfData, $bumpOffset, 1))) {
-            ++$bumpOffset;
-        }
+        $pdfLen = \strlen($pdfData);
+        $bumpOffset = $offset + strspn($pdfData, "\x09\x0a\x0b\x0c\x0d\x20", $offset);
 
-        // Find all startxref tables from this $offset forward
-        $startxrefPreg = preg_match_all(
-            '/(?<=[\r\n])startxref[\s]*[\r\n]+([0-9]+)[\s]*[\r\n]+%%EOF/i',
-            $pdfData,
-            $startxrefMatches,
-            \PREG_SET_ORDER,
-            $offset
-        );
+        // Locate startxref: when starting from 0, inspect the file tail first (O(1) on large PDFs)
+        $startxrefMatches = [];
+        $startxrefPreg = 0;
+        if (0 === $offset) {
+            $tailOffset = max(0, $pdfLen - 4096);
+            $startxrefPreg = preg_match_all(
+                '/(?<=[\r\n])startxref[\s]*[\r\n]+([0-9]+)[\s]*[\r\n]+%%EOF/i',
+                $pdfData,
+                $startxrefMatches,
+                \PREG_SET_ORDER,
+                $tailOffset
+            );
+            if (0 === $startxrefPreg && $tailOffset > 0) {
+                $startxrefPreg = preg_match_all(
+                    '/(?<=[\r\n])startxref[\s]*[\r\n]+([0-9]+)[\s]*[\r\n]+%%EOF/i',
+                    $pdfData,
+                    $startxrefMatches,
+                    \PREG_SET_ORDER,
+                    0
+                );
+            }
+        } else {
+            $startxrefPreg = preg_match_all(
+                '/(?<=[\r\n])startxref[\s]*[\r\n]+([0-9]+)[\s]*[\r\n]+%%EOF/i',
+                $pdfData,
+                $startxrefMatches,
+                \PREG_SET_ORDER,
+                $offset
+            );
+        }
 
         if (0 == $startxrefPreg) {
             // No startxref tables were found
@@ -969,10 +1086,10 @@ class RawDataParser
         } elseif (0 == $offset) {
             // Use the last startxref in the document
             $startxref = (int) $startxrefMatches[\count($startxrefMatches) - 1][1];
-        } elseif (strpos($pdfData, 'xref', $bumpOffset) == $bumpOffset) {
+        } elseif ('xref' === substr($pdfData, $bumpOffset, 4)) {
             // Already pointing at the xref table
             $startxref = $bumpOffset;
-        } elseif (preg_match('/([0-9]+[\s][0-9]+[\s]obj)/i', $pdfData, $matches, 0, $bumpOffset)) {
+        } elseif (1 === preg_match('/\G([0-9]+[\s]+[0-9]+[\s]+obj)/i', $pdfData, $matches, 0, $bumpOffset)) {
             // Cross-Reference Stream object
             $startxref = $bumpOffset;
         } else {
@@ -980,24 +1097,29 @@ class RawDataParser
             $startxref = (int) $startxrefMatches[0][1];
         }
 
-        if ($startxref > \strlen($pdfData)) {
+        if ($startxref > $pdfLen) {
             throw new \Exception('Unable to find xref (PDF corrupted?)');
         }
 
         // check xref position
-        if (strpos($pdfData, 'xref', $startxref) == $startxref) {
+        if ('xref' === substr($pdfData, $startxref, 4)) {
             // Cross-Reference
             $xref = $this->decodeXref($pdfData, $startxref, $xref, $visitedOffsets);
+        } elseif (1 === preg_match('/\G[\0\t\n\f\r ]*[0-9]+[\0\t\n\f\r ]+[0-9]+[\0\t\n\f\r ]+obj\b/', $pdfData, $objMatch, 0, $startxref)) {
+            // Cross-Reference Stream (avoids allocating a full-file str_replace copy on PDF 1.5+ files)
+            $xref = $this->decodeXrefStream($pdfData, $startxref, $xref, $visitedOffsets);
         } else {
-            // Check if the $pdfData might have the wrong line-endings
-            $pdfDataUnix = str_replace("\r\n", "\n", $pdfData);
-            if ($startxref < \strlen($pdfDataUnix) && strpos($pdfDataUnix, 'xref', $startxref) == $startxref) {
-                // Return Unix-line-ending flag
-                $xref = ['Unix' => true];
-            } else {
-                // Cross-Reference Stream
-                $xref = $this->decodeXrefStream($pdfData, $startxref, $xref, $visitedOffsets);
+            // Check if the $pdfData might have the wrong line-endings (\r\n instead of \n)
+            if (false !== strpos($pdfData, "\r\n")) {
+                $pdfDataUnix = str_replace("\r\n", "\n", $pdfData);
+                if ($startxref < \strlen($pdfDataUnix) && 'xref' === substr($pdfDataUnix, $startxref, 4)) {
+                    // Return Unix-line-ending flag
+                    return ['Unix' => true];
+                }
+                unset($pdfDataUnix);
             }
+            // Fallback to Cross-Reference Stream
+            $xref = $this->decodeXrefStream($pdfData, $startxref, $xref, $visitedOffsets);
         }
         if (empty($xref)) {
             throw new \Exception('Unable to find xref');
@@ -1055,6 +1177,10 @@ class RawDataParser
         if (empty($data)) {
             throw new EmptyPdfException('Empty PDF data given.');
         }
+
+        $this->objects = [];
+        $this->freedObjects = [];
+
         // find the pdf header starting position
         if (false === ($trimpos = strpos($data, '%PDF-'))) {
             throw new MissingPdfHeaderException('Invalid PDF data: Missing `%PDF-` header.');
@@ -1068,6 +1194,8 @@ class RawDataParser
 
         // If we found Unix line-endings
         if (isset($xref['Unix'])) {
+            $this->objects = [];
+            $this->freedObjects = [];
             $pdfData = str_replace("\r\n", "\n", $pdfData);
             $xref = $this->getXrefData($pdfData);
         }
@@ -1083,8 +1211,6 @@ class RawDataParser
      * holds only one raw structure in memory at a time. The raw structures
      * are by far the largest transient data when parsing a document.
      *
-     * @param string $pdfData normalized PDF data, as returned by parseHeaderAndXref()
-     * @param array  $xref    xref/trailer data, as returned by parseHeaderAndXref()
      *
      * @return \Generator<string, array> raw object structure keyed by object reference
      *
@@ -1092,19 +1218,35 @@ class RawDataParser
      * @see https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/PDF32000_2008.pdf#page=53 ISO 32000-1:2008, 7.5.7 (object streams)
      * @see https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/PDF32000_2008.pdf#page=59 ISO 32000-1:2008, 7.5.8.3, Table 18 (types of cross-reference stream entries)
      */
-    public function iterateIndirectObjects(string $pdfData, array $xref): \Generator
+    /**
+     * Parse a single PDF object directly from a string slice (e.g. an object inside an /ObjStm).
+     *
+     * @return array{0: string, 1: mixed, 2: int}
+     */
+    public function parseObjectFromString(string $content, int $offset = 0): array
     {
-        // $xref['xref'] is missing, if the cross-reference data contains no
-        // object which is in use.
-        foreach ($xref['xref'] ?? [] as $obj => $offset) {
-            // Only objects with a positive offset are decoded. Objects which
-            // are located in an object stream have an offset of -1, they get
-            // extracted from their object stream by Parser::parseObject().
-            // $xref['xref'] is keyed by object reference, so each object is
-            // decoded exactly once.
-            if ($offset > 0) {
-                yield $obj => $this->getIndirectObject($pdfData, $xref, $obj, $offset, true);
+        return $this->getRawObject($content, $offset);
+    }
+
+    public function iterateIndirectObjects(string $pdfData, array $xref, bool $lazyStreams = false): \Generator
+    {
+        $prevLazy = $this->lazyStreams;
+        $this->lazyStreams = $lazyStreams;
+        try {
+            // $xref['xref'] is missing, if the cross-reference data contains no
+            // object which is in use.
+            foreach ($xref['xref'] ?? [] as $obj => $offset) {
+                // Only objects with a positive offset are decoded. Objects which
+                // are located in an object stream have an offset of -1, they get
+                // extracted from their object stream by Parser::parseObject().
+                // $xref['xref'] is keyed by object reference, so each object is
+                // decoded exactly once.
+                if ($offset > 0) {
+                    yield $obj => $this->getIndirectObject($pdfData, $xref, $obj, $offset, true);
+                }
             }
+        } finally {
+            $this->lazyStreams = $prevLazy;
         }
     }
 }

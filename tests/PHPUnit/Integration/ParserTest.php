@@ -702,7 +702,8 @@ class ParserTest extends TestCase
         $iterations = 2;
 
         /*
-         * check default (= true)
+         * check default (= true): streams are decoded lazily on-demand so parseFile()
+         * itself stays low-memory until the image bytes are explicitly requested.
          */
         $this->fixture = new Parser([]);
         $this->assertTrue($this->fixture->getConfig()->getRetainImageContent());
@@ -712,16 +713,22 @@ class ParserTest extends TestCase
             $document = $this->fixture->parseFile($filename);
         }
 
-        $usedMemory = memory_get_usage(true);
-        $this->assertGreaterThan($baselineMemory + 180000000, $usedMemory, 'Memory is only '.$usedMemory);
+        $lazyMemory = memory_get_usage(true);
+        $this->assertLessThan($baselineMemory + 50000000, $lazyMemory, 'Lazy parse should not eagerly expand 104 MB image');
         $this->assertTrue(null != $document && '' !== $document->getText());
 
+        // When image content IS explicitly requested, retainImageContent=true returns the full decoded image
+        $images = $document->getObjectsByType('XObject', 'Image');
+        $image = reset($images);
+        $this->assertInstanceOf(Image::class, $image);
+        $this->assertGreaterThan(100000000, \strlen((string) $image->getContent()));
+
         // force garbage collection
-        $this->fixture = $document = null;
+        $this->fixture = $document = $images = $image = null;
         gc_collect_cycles();
 
         /*
-         * check false
+         * check false: image content is discarded and getContent() returns null
          */
         $config = new Config();
         $config->setRetainImageContent(false);
@@ -731,6 +738,11 @@ class ParserTest extends TestCase
         for ($i = 0; $i < $iterations; ++$i) {
             $document = $this->fixture->parseFile($filename);
         }
+
+        $images = $document->getObjectsByType('XObject', 'Image');
+        $image = reset($images);
+        $this->assertInstanceOf(Image::class, $image);
+        $this->assertNull($image->getContent());
 
         $usedMemory = memory_get_usage(true);
         /*

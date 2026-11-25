@@ -70,9 +70,16 @@ class Document
     protected $metadata = [];
 
     /**
-     * @var array
+     * @var array|null
      */
     protected $details;
+
+    /**
+     * Whether document-level XMP metadata objects have already been scanned into $this->metadata.
+     *
+     * @var bool
+     */
+    private $xmpLoaded = false;
 
     public function __construct()
     {
@@ -81,14 +88,15 @@ class Document
 
     public function init()
     {
+        $this->details = null;
+        $this->xmpLoaded = false;
+
         $this->buildDictionary();
 
-        $this->buildDetails();
-
-        // Propagate init to objects.
-        foreach ($this->objects as $object) {
-            $object->getHeader()->init();
-            $object->init();
+        // Only Encoding objects require eager init(); Font loads its ToUnicode CMap lazily,
+        // and Element/PDFObject::init() are no-ops.
+        foreach ($this->getObjectsByType('Encoding') as $encoding) {
+            $encoding->init();
         }
     }
 
@@ -165,19 +173,19 @@ class Document
 
                     // Remove backslash plus bytes written into high part of
                     // multibyte unicode character
-                    while (preg_match("/\x5c\x5c\xe0([\xb4-\xb8])(.)/", $value, $match)) {
+                    $value = preg_replace_callback("/\x5c\x5c\xe0([\xb4-\xb8])(.)/", function (array $match): string {
                         $diff = (\ord($match[1]) - 182) * 64;
-                        $newbyte = PDFDocEncoding::convertPDFDoc2UTF8(\chr(\ord($match[2]) + $diff));
-                        $value = preg_replace("/\x5c\x5c\xe0".$match[1].$match[2].'/', $newbyte, $value);
-                    }
+
+                        return PDFDocEncoding::convertPDFDoc2UTF8(\chr((\ord($match[2]) + $diff) & 0xFF));
+                    }, $value);
 
                     // Remove bytes written into low part of multibyte unicode
                     // character
-                    while (preg_match("/(.)\x9c\xe0([\xb3-\xb7])/", $value, $match)) {
+                    $value = preg_replace_callback("/(.)\x9c\xe0([\xb3-\xb7])/", function (array $match): string {
                         $diff = \ord($match[2]) - 181;
-                        $newbyte = \chr(\ord($match[1]) + $diff);
-                        $value = preg_replace('/'.$match[1]."\x9c\xe0".$match[2].'/', $newbyte, $value);
-                    }
+
+                        return \chr((\ord($match[1]) + $diff) & 0xFF);
+                    }, $value);
 
                     // Remove this byte string that Adobe occasionally adds
                     // between two single byte characters in a unicode string
@@ -189,6 +197,39 @@ class Document
                     // and decode the whole thing.
                     $value = str_replace("\\\r", '', $value);
                     $details[$key] = PDFDocEncoding::convertPDFDoc2UTF8($value);
+                }
+            }
+        }
+
+        // Lazily extract document-level XMP metadata once (Catalog /Metadata first to avoid
+        // XML-parsing hundreds of embedded per-image XMP streams).
+        if (!$this->xmpLoaded) {
+            $this->xmpLoaded = true;
+            $catalogXmpFound = false;
+
+            if ($this->hasObjectsByType('Catalog')) {
+                $catalogs = $this->getObjectsByType('Catalog');
+                $catalog = reset($catalogs);
+                if ($catalog instanceof PDFObject && $catalog->has('Metadata')) {
+                    $metaObj = $catalog->get('Metadata');
+                    if ($metaObj instanceof PDFObject) {
+                        $metaContent = $metaObj->getContent();
+                        if (\is_string($metaContent) && '' !== $metaContent) {
+                            $this->extractXMPMetadata($metaContent);
+                            $catalogXmpFound = true;
+                        }
+                    }
+                }
+            }
+
+            if (!$catalogXmpFound && $this->hasObjectsByType('Metadata')) {
+                foreach ($this->getObjectsByType('Metadata') as $metaObj) {
+                    if ($metaObj instanceof PDFObject) {
+                        $metaContent = $metaObj->getContent();
+                        if (\is_string($metaContent) && '' !== $metaContent) {
+                            $this->extractXMPMetadata($metaContent);
+                        }
+                    }
                 }
             }
         }
@@ -281,8 +322,11 @@ class Document
                         }
 
                         // Move down one level in the stack
-                        $metadata = &$stack[\count($stack) - 1];
-                        unset($stack[\count($stack) - 1]);
+                        $stackDepth = \count($stack);
+                        if ($stackDepth > 0) {
+                            $metadata = &$stack[$stackDepth - 1];
+                            unset($stack[$stackDepth - 1]);
+                        }
                         break;
                 }
             }
@@ -297,6 +341,7 @@ class Document
                 // So if there are multiple XMP blocks, just merge the values
                 // of each found block over top of the existing values
                 $this->metadata = array_merge($this->metadata, $metadata);
+                $this->details = null;
             }
         }
 
@@ -465,6 +510,10 @@ class Document
 
     public function getDetails(): array
     {
+        if (null === $this->details) {
+            $this->buildDetails();
+        }
+
         return $this->details;
     }
 }
