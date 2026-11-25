@@ -1086,12 +1086,37 @@ class PostScriptGlyphs
         ];
     }
 
+    /**
+     * Cached integer code-point lookup table (avoids repeated hexdec() per character).
+     *
+     * @var array<string, int>|null
+     */
+    private static $codePointMap;
+
     public static function getCodePoint($glyph): ?int
     {
-        $glyphsMap = static::getGlyphs();
+        if (null === self::$codePointMap) {
+            self::$codePointMap = [];
+            foreach (static::getGlyphs() as $name => $hex) {
+                self::$codePointMap[$name] = (int) hexdec($hex);
+            }
+        }
 
-        if (isset($glyphsMap[$glyph])) {
-            return hexdec($glyphsMap[$glyph]);
+        if (isset(self::$codePointMap[$glyph])) {
+            return self::$codePointMap[$glyph];
+        }
+
+        // Adobe Glyph List fallback for uniXXXX / uXXXXX glyph names
+        if (\is_string($glyph)) {
+            if (0 === strncmp($glyph, 'uni', 3) && 7 === \strlen($glyph) && ctype_xdigit(substr($glyph, 3))) {
+                return (int) hexdec(substr($glyph, 3));
+            }
+            if ('u' === ($glyph[0] ?? '') && \strlen($glyph) >= 5 && \strlen($glyph) <= 7 && ctype_xdigit(substr($glyph, 1))) {
+                $cp = (int) hexdec(substr($glyph, 1));
+                if ($cp <= 0x10FFFF) {
+                    return $cp;
+                }
+            }
         }
 
         return null;

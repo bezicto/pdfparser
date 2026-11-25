@@ -63,8 +63,11 @@ class Encoding extends PDFObject
         $this->differences = [];
         $this->encoding = [];
 
-        if ($this->has('BaseEncoding')) {
-            $this->encoding = EncodingLocator::getEncoding($this->getEncodingClass())->getTranslations();
+        if ($this->has('BaseEncoding') || $this->has('Differences')) {
+            if ($this->has('BaseEncoding')) {
+                $this->encoding = EncodingLocator::getTranslations($this->getEncodingClass());
+                $this->mapping = $this->encoding;
+            }
 
             // Build table including differences.
             $differences = $this->get('Differences')->getContent();
@@ -77,7 +80,7 @@ class Encoding extends PDFObject
             foreach ($differences as $difference) {
                 /** @var ElementNumeric $difference */
                 if ($difference instanceof ElementNumeric) {
-                    $code = $difference->getContent();
+                    $code = (int) $difference->getContent();
                     continue;
                 }
 
@@ -91,7 +94,6 @@ class Encoding extends PDFObject
                 ++$code;
             }
 
-            $this->mapping = $this->encoding;
             foreach ($this->differences as $code => $difference) {
                 /* @var string $difference */
                 $this->mapping[$code] = $difference;

@@ -58,11 +58,21 @@ class Font extends PDFObject
     protected $tableSizes;
 
     /**
-     * Caches results from uchr.
+     * Caches results from uchr (bounded to prevent unbounded static memory growth).
      *
-     * @var array
+     * @var array<int, string>
      */
     private static $uchrCache = [];
+
+    private const UCHR_CACHE_LIMIT = 8192;
+
+    /**
+     * Code space byte lengths declared in begincodespacerange (ordered shortest to longest
+     * for variable-length CJK CMaps).
+     *
+     * @var array<int, array{0: int, 1: int, 2: int}>
+     */
+    protected $codeSpaceRanges = [];
 
     /**
      * In some PDF-files encoding could be referenced by object id but object itself does not contain
@@ -71,7 +81,7 @@ class Font extends PDFObject
      *
      * Therefore, we create an instance of Encoding from them during decoding and cache this value in this property.
      *
-     * @var Encoding
+     * @var Encoding|null
      *
      * @see https://github.com/smalot/pdfparser/pull/500
      */
@@ -79,8 +89,8 @@ class Font extends PDFObject
 
     public function init()
     {
-        // Load translate table.
-        $this->loadTranslateTable();
+        // Defer loadTranslateTable() until first font translation/width lookup
+        // so unused fonts incur zero CMap parsing CPU or RAM overhead.
     }
 
     public function getName(): string
@@ -135,7 +145,18 @@ class Font extends PDFObject
      */
     public function translateChar(string $char, bool $use_default = true)
     {
-        $dec = hexdec(bin2hex($char));
+        if (null === $this->table) {
+            $this->loadTranslateTable();
+        }
+
+        $len = \strlen($char);
+        if (1 === $len) {
+            $dec = \ord($char);
+        } elseif (2 === $len) {
+            $dec = (\ord($char[0]) << 8) | \ord($char[1]);
+        } else {
+            $dec = hexdec(bin2hex($char));
+        }
 
         if (\array_key_exists($dec, $this->table)) {
             return $this->table[$dec];
@@ -155,7 +176,7 @@ class Font extends PDFObject
         // fallback for decoding single-byte ANSI characters that are not in the lookup table
         $fallbackDecoded = $char;
         if (
-            \strlen($char) < 2
+            $len < 2
             && $this->has('Encoding')
             && $this->get('Encoding') instanceof Encoding
         ) {
@@ -179,32 +200,76 @@ class Font extends PDFObject
      */
     public static function uchr($code): string
     {
-        // note:
-        // $code was typed as int before, but changed in https://github.com/smalot/pdfparser/pull/623
-        // because in some cases uchr was called with a float instead of an integer.
-        //
         // A float outside the integer range (e.g. the result of a hexdec() overflow),
-        // INF or NAN can never be a valid Unicode code point. It is treated as a
-        // missing character instead of being cast to int, which raises a
-        // "not representable as int" warning on PHP 8.5+ and silently yields a
-        // wrapped-around or zero value on older PHP versions.
-        //
-        // The upper bound is compared as float on purpose: PHP_INT_MAX is not exactly
-        // representable as float and gets rounded up to PHP_INT_MAX + 1 in a
-        // comparison, so "$code > PHP_INT_MAX" is false for exactly that value.
+        // INF or NAN can never be a valid Unicode code point.
         if (\is_float($code) && (!\is_finite($code) || $code < \PHP_INT_MIN || $code >= \PHP_INT_MAX + 1)) {
             return self::MISSING;
         }
 
         $code = (int) $code;
 
-        if (!isset(self::$uchrCache[$code])) {
-            // html_entity_decode() will not work with UTF-16 or UTF-32 char entities,
-            // therefore, we use mb_convert_encoding() instead
-            self::$uchrCache[$code] = mb_convert_encoding("&#{$code};", 'UTF-8', 'HTML-ENTITIES');
+        if ($code < 0 || $code > 0x10FFFF) {
+            return self::MISSING;
         }
 
-        return self::$uchrCache[$code];
+        // Fast path for ASCII (0x00..0x7F): direct single-byte chr()
+        if ($code < 0x80) {
+            return \chr($code);
+        }
+
+        if (isset(self::$uchrCache[$code])) {
+            return self::$uchrCache[$code];
+        }
+
+        if ($code < 0x800) {
+            $utf8 = \chr(0xC0 | ($code >> 6)).\chr(0x80 | ($code & 0x3F));
+        } elseif ($code < 0x10000) {
+            $utf8 = \chr(0xE0 | ($code >> 12))
+                .\chr(0x80 | (($code >> 6) & 0x3F))
+                .\chr(0x80 | ($code & 0x3F));
+        } else {
+            $utf8 = \chr(0xF0 | ($code >> 18))
+                .\chr(0x80 | (($code >> 12) & 0x3F))
+                .\chr(0x80 | (($code >> 6) & 0x3F))
+                .\chr(0x80 | ($code & 0x3F));
+        }
+
+        if (\count(self::$uchrCache) < self::UCHR_CACHE_LIMIT) {
+            self::$uchrCache[$code] = $utf8;
+        }
+
+        return $utf8;
+    }
+
+    /**
+     * Decode a UTF-16BE hexadecimal string into UTF-8, combining UTF-16 surrogate pairs
+     * while staying tolerant of odd-length hex fragments.
+     */
+    private static function decodeUtf16BeHex(string $hex): string
+    {
+        $parts = str_split($hex, 4);
+        $count = \count($parts);
+        $text = '';
+
+        for ($i = 0; $i < $count; ++$i) {
+            $unit = (int) hexdec($parts[$i]);
+            if (
+                $unit >= 0xD800 && $unit <= 0xDBFF
+                && ($i + 1) < $count
+                && 4 === \strlen($parts[$i + 1])
+            ) {
+                $low = (int) hexdec($parts[$i + 1]);
+                if ($low >= 0xDC00 && $low <= 0xDFFF) {
+                    $codePoint = 0x10000 + (($unit - 0xD800) << 10) + ($low - 0xDC00);
+                    $text .= self::uchr($codePoint);
+                    ++$i;
+                    continue;
+                }
+            }
+            $text .= self::uchr($unit);
+        }
+
+        return $text;
     }
 
     /**
@@ -218,52 +283,50 @@ class Font extends PDFObject
 
         $this->table = [];
         $this->rangeOffsets = [];
+        $this->codeSpaceRanges = [];
         $this->tableSizes = [
             'from' => 1,
             'to' => 1,
         ];
 
         if ($this->has('ToUnicode')) {
-            $content = $this->get('ToUnicode')->getContent();
+            $toUnicodeObj = $this->get('ToUnicode');
+            $content = \is_object($toUnicodeObj) && method_exists($toUnicodeObj, 'getContent') ? (string) $toUnicodeObj->getContent() : '';
             $matches = [];
 
-            // Support for multiple spacerange sections
+            // Support for multiple spacerange sections and variable-length CJK codespaces
             if (preg_match_all('/begincodespacerange(?P<sections>.*?)endcodespacerange/s', $content, $matches)) {
+                $firstSectionSet = false;
                 foreach ($matches['sections'] as $section) {
-                    $regexp = '/<(?P<from>[0-9A-F]+)> *<(?P<to>[0-9A-F]+)>[ \r\n]+/is';
+                    $regexp = '/<(?P<from>[0-9A-F]+)>\s*<(?P<to>[0-9A-F]+)>/is';
 
-                    preg_match_all($regexp, $section, $matches);
-
-                    $this->tableSizes = [
-                        'from' => max(1, \strlen(current($matches['from'])) / 2),
-                        'to' => max(1, \strlen(current($matches['to'])) / 2),
-                    ];
-
-                    break;
+                    if (preg_match_all($regexp, $section, $csMatches) > 0) {
+                        if (!$firstSectionSet) {
+                            $this->tableSizes = [
+                                'from' => max(1, (int) (\strlen($csMatches['from'][0]) / 2)),
+                                'to' => max(1, (int) (\strlen($csMatches['to'][0]) / 2)),
+                            ];
+                            $firstSectionSet = true;
+                        }
+                        foreach ($csMatches['from'] as $k => $fromHex) {
+                            $byteLen = max(1, (int) (\strlen($fromHex) / 2));
+                            $this->codeSpaceRanges[] = [$byteLen, hexdec($fromHex), hexdec($csMatches['to'][$k])];
+                        }
+                    }
                 }
             }
 
             // Support for multiple bfchar sections
             if (preg_match_all('/beginbfchar(?P<sections>.*?)endbfchar/s', $content, $matches)) {
                 foreach ($matches['sections'] as $section) {
-                    $regexp = '/<(?P<from>[0-9A-F]+)> *<(?P<to>[0-9A-F]+)>[ \r\n]+/is';
+                    $regexp = '/<(?P<from>[0-9A-F]+)>\s*<(?P<to>[0-9A-F]+)>/is';
 
-                    preg_match_all($regexp, $section, $matches);
+                    if (preg_match_all($regexp, $section, $bfMatches) > 0) {
+                        $this->tableSizes['from'] = max(1, (int) (\strlen($bfMatches['from'][0]) / 2));
 
-                    $this->tableSizes['from'] = max(1, \strlen(current($matches['from'])) / 2);
-
-                    foreach ($matches['from'] as $key => $from) {
-                        $parts = preg_split(
-                            '/([0-9A-F]{4})/i',
-                            $matches['to'][$key],
-                            0,
-                            \PREG_SPLIT_NO_EMPTY | \PREG_SPLIT_DELIM_CAPTURE
-                        );
-                        $text = '';
-                        foreach ($parts as $part) {
-                            $text .= self::uchr(hexdec($part));
+                        foreach ($bfMatches['from'] as $key => $from) {
+                            $this->table[hexdec($from)] = self::decodeUtf16BeHex($bfMatches['to'][$key]);
                         }
-                        $this->table[hexdec($from)] = $text;
                     }
                 }
             }
@@ -273,46 +336,27 @@ class Font extends PDFObject
                 foreach ($matches['sections'] as $section) {
                     /**
                      * Regexp to capture <from>, <to>, and either <offset> or [...] items.
-                     * - (?P<from>...) Source range's start
-                     * - (?P<to>...)   Source range's end
-                     * - (?P<dest>...) Destination range's offset or each char code
-                     *                 Some PDF file has 2-byte Unicode values on new lines > added \r\n
                      */
-                    $regexp = '/<(?P<from>[0-9A-F]+)> *<(?P<to>[0-9A-F]+)> *(?P<dest><[0-9A-F]+>|\[[\r\n<>0-9A-F ]+\])[ \r\n]+/is';
+                    $regexp = '/<(?P<from>[0-9A-F]+)>\s*<(?P<to>[0-9A-F]+)>\s*(?P<dest><[0-9A-F]+>|\[[\t\r\n<>0-9A-F ]+\])/is';
 
-                    preg_match_all($regexp, $section, $matches);
+                    if (preg_match_all($regexp, $section, $brMatches) <= 0) {
+                        continue;
+                    }
 
-                    foreach ($matches['from'] as $key => $from) {
+                    foreach ($brMatches['from'] as $key => $from) {
                         $char_from = hexdec($from);
-                        $char_to = hexdec($matches['to'][$key]);
-                        $dest = $matches['dest'][$key];
+                        $char_to = hexdec($brMatches['to'][$key]);
+                        $dest = $brMatches['dest'][$key];
 
-                        if (1 === preg_match('/^<(?P<offset>[0-9A-F]+)>$/i', $dest, $offset_matches)) {
-                            // Support for : <srcCode1> <srcCode2> <dstString>
-                            //
-                            // <dstString> is a UTF-16BE string of up to 512 bytes, i.e. it may consist
-                            // of more than one code unit (e.g. <00310030002F00310031> = "10/11").
-                            // It is split into 4-digit chunks like in the bfchar/array cases above
-                            // and below. Only its last byte is incremented for each consecutive
-                            // source code; the spec requires that this never overflows the byte,
-                            // therefore the last code unit is incremented as a whole here.
-                            //
-                            // See ISO 32000-1:2008, 9.10.3 "ToUnicode CMaps":
-                            // https://opensource.adobe.com/dc-acrobat-sdk-docs/pdfstandards/PDF32000_2008.pdf#page=303
-                            $parts = preg_split(
-                                '/([0-9A-F]{4})/i',
-                                $offset_matches['offset'],
-                                0,
-                                \PREG_SPLIT_NO_EMPTY | \PREG_SPLIT_DELIM_CAPTURE
-                            );
-                            if (false === $parts || [] === $parts) {
+                        if ('<' === $dest[0]) {
+                            $offsetHex = substr($dest, 1, -1);
+                            if ('' === $offsetHex) {
                                 continue;
                             }
-                            $offset = hexdec(array_pop($parts));
-                            $prefix = '';
-                            foreach ($parts as $part) {
-                                $prefix .= self::uchr(hexdec($part));
-                            }
+                            $parts = str_split($offsetHex, 4);
+                            $lastPart = array_pop($parts);
+                            $offset = hexdec($lastPart);
+                            $prefix = [] !== $parts ? self::decodeUtf16BeHex(implode('', $parts)) : '';
 
                             // Lazy-evaluate wide ranges (> 256) on-demand to prevent memory exhaustion
                             if (($char_to - $char_from) > 256) {
@@ -330,26 +374,13 @@ class Font extends PDFObject
                         } else {
                             // Support for : <srcCode1> <srcCodeN> [<dstString1> <dstString2> ... <dstStringN>]
                             $strings = [];
-                            $matched = preg_match_all('/<(?P<string>[0-9A-F]+)> */is', $dest, $strings);
+                            $matched = preg_match_all('/<(?P<string>[0-9A-F]+)>/is', $dest, $strings);
                             if (false === $matched || 0 === $matched) {
                                 continue;
                             }
 
                             foreach ($strings['string'] as $position => $string) {
-                                $parts = preg_split(
-                                    '/([0-9A-F]{4})/i',
-                                    $string,
-                                    0,
-                                    \PREG_SPLIT_NO_EMPTY | \PREG_SPLIT_DELIM_CAPTURE
-                                );
-                                if (false === $parts) {
-                                    continue;
-                                }
-                                $text = '';
-                                foreach ($parts as $part) {
-                                    $text .= self::uchr(hexdec($part));
-                                }
-                                $this->table[$char_from + $position] = $text;
+                                $this->table[$char_from + $position] = self::decodeUtf16BeHex($string);
                             }
                         }
                     }
@@ -378,6 +409,10 @@ class Font extends PDFObject
      */
     public function calculateTextWidth(string $text, ?array &$missing = null): ?float
     {
+        if (null === $this->table) {
+            $this->loadTranslateTable();
+        }
+
         $index_map = array_flip($this->table);
         $details = $this->getDetails();
 
@@ -505,13 +540,26 @@ class Font extends PDFObject
     public static function decodeUnicode(string $text): string
     {
         if ("\xFE\xFF" === substr($text, 0, 2)) {
-            // Strip U+FEFF byte order marker.
+            // Strip U+FEFF byte order marker and decode UTF-16BE (including surrogate pairs).
             $decode = substr($text, 2);
             $text = '';
             $length = \strlen($decode);
 
             for ($i = 0; $i < $length; $i += 2) {
-                $text .= self::uchr(hexdec(bin2hex(substr($decode, $i, 2))));
+                if ($i + 1 >= $length) {
+                    $text .= self::uchr(\ord($decode[$i]));
+                    break;
+                }
+                $unit = (\ord($decode[$i]) << 8) | \ord($decode[$i + 1]);
+                if ($unit >= 0xD800 && $unit <= 0xDBFF && ($i + 3) < $length) {
+                    $low = (\ord($decode[$i + 2]) << 8) | \ord($decode[$i + 3]);
+                    if ($low >= 0xDC00 && $low <= 0xDFFF) {
+                        $text .= self::uchr(0x10000 + (($unit - 0xD800) << 10) + ($low - 0xDC00));
+                        $i += 2;
+                        continue;
+                    }
+                }
+                $text .= self::uchr($unit);
             }
         }
 
@@ -523,7 +571,50 @@ class Font extends PDFObject
      */
     protected function getFontSpaceLimit(): int
     {
-        return $this->config->getFontSpaceLimit();
+        return null !== $this->config ? $this->config->getFontSpaceLimit() : -50;
+    }
+
+    /**
+     * Single-pass PDF literal string unescape (octal + standard escapes) without double-unescaping.
+     */
+    private static function decodeLiteralStringEscapes(string $text): string
+    {
+        if (false === strpos($text, '\\')) {
+            return $text;
+        }
+
+        return (string) preg_replace_callback(
+            '/\\\\([0-7]{1,3}|[\\\\()nrtfb ])/',
+            function (array $m): string {
+                $seq = $m[1];
+                if ($seq[0] >= '0' && $seq[0] <= '7') {
+                    return \chr(octdec($seq) & 0xFF);
+                }
+                switch ($seq) {
+                    case '\\':
+                        return '\\';
+                    case '(':
+                        return '(';
+                    case ')':
+                        return ')';
+                    case 'n':
+                        return "\n";
+                    case 'r':
+                        return "\r";
+                    case 't':
+                        return "\t";
+                    case 'f':
+                        return "\f";
+                    case 'b':
+                        return "\x08";
+                    case ' ':
+                        return ' ';
+                }
+
+                return $seq;
+            },
+            $text
+        );
     }
 
     /**
@@ -544,21 +635,27 @@ class Font extends PDFObject
                     }
                     continue 2;
                 case '<':
-                    // Decode hexadecimal.
-                    $text = self::decodeHexadecimal('<'.$command[PDFObject::COMMAND].'>');
+                    $rawHex = $command[PDFObject::COMMAND];
+                    // Fast path for valid PDF hex strings: decode directly to binary without
+                    // applying literal-string backslash unescaping (which corrupts 2-byte CIDs like 0x5C6E).
+                    if ('' === $rawHex || 1 === preg_match('/^[0-9a-f\s]+$/i', $rawHex)) {
+                        $cleanHex = preg_replace('/\s+/', '', $rawHex);
+                        $text = '' === $cleanHex ? '' : pack('H*', $cleanHex);
+                    } else {
+                        // Legacy fallback for non-hex payloads containing escape sequences (e.g. Issue #597)
+                        $text = self::decodeHexadecimal('<'.$rawHex.'>');
+                        $text = str_replace(
+                            ['\\\\', '\(', '\)', '\n', '\r', '\t', '\f', '\ ', '\b'],
+                            [\chr(92), \chr(40), \chr(41), \chr(10), \chr(13), \chr(9), \chr(12), \chr(32), \chr(8)],
+                            $text
+                        );
+                    }
                     break;
 
                 default:
-                    // Decode octal (if necessary).
-                    $text = self::decodeOctal($command[PDFObject::COMMAND]);
+                    // Single-pass octal + PDF escape decoding avoids corrupting \\n into \<LF>.
+                    $text = self::decodeLiteralStringEscapes($command[PDFObject::COMMAND]);
             }
-
-            // replace escaped chars
-            $text = str_replace(
-                ['\\\\', '\(', '\)', '\n', '\r', '\t', '\f', '\ ', '\b'],
-                [\chr(92), \chr(40), \chr(41), \chr(10), \chr(13), \chr(9), \chr(12), \chr(32), \chr(8)],
-                $text
-            );
 
             // add content to result string
             if (isset($words[$word_position])) {
@@ -637,44 +734,44 @@ class Font extends PDFObject
      */
     private function decodeContentByToUnicodeCMapOrDescendantFonts(string $text): string
     {
+        if (null === $this->table) {
+            $this->loadTranslateTable();
+        }
+
         $bytes = $this->tableSizes['from'];
 
         if ($bytes) {
             $result = '';
             $length = \strlen($text);
 
-            for ($i = 0; $i < $length; $i += $bytes) {
-                $char = substr($text, $i, $bytes);
-
-                if (false !== ($decoded = $this->translateChar($char, false))) {
-                    $char = $decoded;
-                } elseif ($this->has('DescendantFonts')) {
-                    if ($this->get('DescendantFonts') instanceof PDFObject) {
-                        $fonts = $this->get('DescendantFonts')->getHeader()->getElements();
-                    } else {
-                        $fonts = $this->get('DescendantFonts')->getContent();
+            if (1 === $bytes) {
+                for ($i = 0; $i < $length; ++$i) {
+                    $dec = \ord($text[$i]);
+                    if (isset($this->table[$dec])) {
+                        $result .= $this->table[$dec];
+                        continue;
                     }
-                    $decoded = false;
-
-                    foreach ($fonts as $font) {
-                        if ($font instanceof self) {
-                            if (false !== ($decoded = $font->translateChar($char, false))) {
-                                $decoded = mb_convert_encoding($decoded, 'UTF-8', 'Windows-1252');
-                                break;
-                            }
-                        }
-                    }
-
-                    if (false !== $decoded) {
-                        $char = $decoded;
-                    } else {
-                        $char = mb_convert_encoding($char, 'UTF-8', 'Windows-1252');
-                    }
-                } else {
-                    $char = self::MISSING;
+                    $result .= $this->translateFallbackChar($text[$i]);
                 }
-
-                $result .= $char;
+            } elseif (2 === $bytes) {
+                for ($i = 0; $i < $length; $i += 2) {
+                    if ($i + 1 < $length) {
+                        $dec = (\ord($text[$i]) << 8) | \ord($text[$i + 1]);
+                        if (isset($this->table[$dec])) {
+                            $result .= $this->table[$dec];
+                            continue;
+                        }
+                        $char = $text[$i].$text[$i + 1];
+                    } else {
+                        $char = $text[$i];
+                    }
+                    $result .= $this->translateFallbackChar($char);
+                }
+            } else {
+                for ($i = 0; $i < $length; $i += $bytes) {
+                    $char = substr($text, $i, $bytes);
+                    $result .= $this->translateFallbackChar($char);
+                }
             }
 
             $text = $result;
@@ -684,24 +781,68 @@ class Font extends PDFObject
     }
 
     /**
+     * Fallback path when a character code is not present in the direct CMap lookup table.
+     */
+    private function translateFallbackChar(string $char): string
+    {
+        if (false !== ($decoded = $this->translateChar($char, false))) {
+            return $decoded;
+        }
+
+        if ($this->has('DescendantFonts')) {
+            if ($this->get('DescendantFonts') instanceof PDFObject) {
+                $fonts = $this->get('DescendantFonts')->getHeader()->getElements();
+            } else {
+                $fonts = $this->get('DescendantFonts')->getContent();
+            }
+            $decoded = false;
+
+            foreach ($fonts as $font) {
+                if ($font instanceof self) {
+                    if (false !== ($decoded = $font->translateChar($char, false))) {
+                        $decoded = mb_convert_encoding($decoded, 'UTF-8', 'Windows-1252');
+                        break;
+                    }
+                }
+            }
+
+            if (false !== $decoded) {
+                return $decoded;
+            }
+
+            return mb_convert_encoding($char, 'UTF-8', 'Windows-1252');
+        }
+
+        return self::MISSING;
+    }
+
+    /**
      * Decode content by any type of Encoding (dictionary's item) instance.
      */
     private function decodeContentByEncoding(string $text): ?string
     {
         $encoding = $this->get('Encoding');
 
-        // When Encoding referenced by object id (/Encoding 520 0 R) but object itself does not contain `/Type /Encoding` in it's dictionary.
-        if ($encoding instanceof PDFObject) {
+        // When Encoding is an inline dictionary (/Encoding << /BaseEncoding ... /Differences [...] >>)
+        if ($encoding instanceof Header) {
+            if (!$this->initializedEncodingByPdfObject) {
+                $enc = new Encoding($this->document, $encoding, null, $this->config);
+                $enc->init();
+                $this->initializedEncodingByPdfObject = $enc;
+            }
+            $encoding = $this->initializedEncodingByPdfObject;
+        } elseif ($encoding instanceof PDFObject && !($encoding instanceof Encoding)) {
+            // When Encoding referenced by object id (/Encoding 520 0 R) without `/Type /Encoding`
             $encoding = $this->getInitializedEncodingByPdfObject($encoding);
         }
 
-        // When Encoding referenced by object id (/Encoding 520 0 R) but object itself contains `/Type /Encoding` in it's dictionary.
+        // When Encoding is an Encoding instance
         if ($encoding instanceof Encoding) {
             return $this->decodeContentByEncodingEncoding($text, $encoding);
         }
 
-        // When Encoding is just string (/Encoding /WinAnsiEncoding)
-        if ($encoding instanceof Element) { // todo: ElementString class must by used?
+        // When Encoding is just a name (/Encoding /WinAnsiEncoding)
+        if ($encoding instanceof Element) {
             return $this->decodeContentByEncodingElement($text, $encoding);
         }
 
@@ -734,7 +875,7 @@ class Font extends PDFObject
         $length = \strlen($text);
 
         for ($i = 0; $i < $length; ++$i) {
-            $dec_av = hexdec(bin2hex($text[$i]));
+            $dec_av = \ord($text[$i]);
             $dec_ap = $encoding->translateChar($dec_av);
             $result .= self::uchr($dec_ap ?? $dec_av);
         }

@@ -795,4 +795,35 @@ end';
         // Unmapped code outside ranges returns MISSING
         $this->assertSame(Font::MISSING, $font->translateChar("\xFF\xFE"));
     }
+
+    public function testUtf16BeSurrogatePairsAndHexCidBackslashSafety(): void
+    {
+        // Astral Unicode mathematical italic x (U+1D465 = UTF-16BE D835 DC65)
+        $this->assertSame("\u{1D465}", Font::decodeUnicode("\xFE\xFF\xD8\x35\xDC\x65"));
+
+        $document = new Document();
+        $header = Header::parse('<</Type /Font /Subtype /Type0 /ToUnicode 2 0 R>>', $document);
+        $font = new Font($document, $header, null, new Config());
+
+        $cmap = "begincmap\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n"
+            ."2 beginbfchar\n<0001> <D835DC65>\n<5C6E> <0058>\nendbfchar\nendcmap";
+        $unicode = new PDFObject($document, null, $cmap);
+        $document->setObjects(['1_0' => $font, '2_0' => $unicode]);
+
+        $this->assertSame("\u{1D465}", $font->translateChar("\x00\x01"));
+        // Hex CID <5C6E> (bytes '\n') must NOT be corrupted by literal backslash unescaping
+        $commands = [[PDFObject::TYPE => '<', PDFObject::OPERATOR => 'Tj', PDFObject::COMMAND => '00015C6E']];
+        $this->assertSame("\u{1D465}X", $font->decodeText($commands));
+    }
+
+    public function testInlineHeaderEncodingAndAglUniGlyphFallback(): void
+    {
+        $document = new Document();
+        $header = Header::parse('<</Type /Font /Subtype /Type1 /Encoding <</Differences [65 /uni0410 66 /B]>> >>', $document);
+        $font = new Font($document, $header, null, new Config());
+        $document->setObjects(['1_0' => $font]);
+
+        // Byte 65 -> /uni0410 (Cyrillic 'А'), byte 66 -> /B, byte 32 -> space (preserved without BaseEncoding)
+        $this->assertSame("\u{0410}B ", $font->decodeContent('AB '));
+    }
 }
