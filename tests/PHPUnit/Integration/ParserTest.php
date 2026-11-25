@@ -52,8 +52,6 @@ class ParserTest extends TestCase
     }
 
     /**
-     * Notice: it may fail to run in Scrutinizer because of memory limitations.
-     *
      * @group memory-heavy
      */
     public function testParseFile(): void
